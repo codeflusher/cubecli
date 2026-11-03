@@ -1,0 +1,30 @@
+[package]
+name = "cubecli-core"
+description = "Domain model, project metadata, scheduling, and trait contracts for cubecli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+chrono = { version = "0.4.45", features = ["serde"] }
+croner = "4.0.2"
+dirs = "7.0.0"
+rand = "0.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "process", "io-util", "time"] }
+tokio-util = "0.7.20"
+toml = "1.1.8"
+tracing = "0.1"
+url = "2.5.8"
+walkdir = "2.5"
+zip = { version = "9.2.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+sha1 = "0.11.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }

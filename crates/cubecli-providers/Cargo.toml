@@ -1,0 +1,32 @@
+[package]
+name = "cubecli-providers"
+description = "HTTP providers for Minecraft cores, addons, and JDKs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cubecli-core = { path = "../cubecli-core" }
+async-trait = "0.1.92"
+chrono = "0.4.45"
+flate2 = "1.1.10"
+futures-util = "0.3.34"
+md-5 = "0.11.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "gzip", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+tar = "0.4.46"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", default-features = false, features = ["fs", "io-util", "time"] }
+tracing = "0.1"
+url = "2.5.8"
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+flate2 = "1.1.10"
+tar = "0.4.46"
+serde_json = "1"

@@ -1,0 +1,36 @@
+[package]
+name = "cubecli"
+description = "Create, configure, run, and maintain Minecraft servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cubecli"
+path = "src/main.rs"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3"
+tempfile = "3"
+chrono = "0.4.45"
+
+[dependencies]
+cubecli-core = { path = "../cubecli-core" }
+cubecli-providers = { path = "../cubecli-providers" }
+cubecli-runtime = { path = "../cubecli-runtime" }
+cubecli-tui = { path = "../cubecli-tui" }
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive"] }
+comfy-table = "8.0.1"
+dialoguer = "0.12.0"
+fd-lock = "4.0.4"
+futures-util = "0.3.34"
+libc = "0.2"
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "io-std", "signal"] }
+tokio-util = "0.7.20"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
