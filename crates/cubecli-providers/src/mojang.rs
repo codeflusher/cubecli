@@ -22,6 +22,9 @@ use crate::http;
 pub const VERSION_MANIFEST: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
+/// Username → UUID lookups (a different host than piston-meta).
+pub const PROFILES_API: &str = "https://api.mojang.com";
+
 /// Path after the piston-meta origin — kept in one place so the production
 /// base (`new`) and `manifest_url` can never drift apart again.
 fn manifest_path() -> &'static str {
@@ -32,22 +35,29 @@ fn manifest_path() -> &'static str {
 pub struct MojangMeta {
     client: reqwest::Client,
     base: String,
+    /// api.mojang.com in production; pointed at a mock together with `base`.
+    profiles_base: String,
 }
 
 impl MojangMeta {
     pub fn new(client: reqwest::Client) -> Self {
-        Self::with_base(
+        Self {
             client,
-            VERSION_MANIFEST
+            base: VERSION_MANIFEST
                 .strip_suffix(manifest_path())
                 .unwrap_or(VERSION_MANIFEST)
                 .to_string(),
-        )
+            profiles_base: PROFILES_API.to_string(),
+        }
     }
 
-    /// Test hook: point at a mock server (base without the manifest path).
+    /// Test hook: point piston-meta AND the profiles API at a mock server.
     pub fn with_base(client: reqwest::Client, base: String) -> Self {
-        Self { client, base }
+        Self {
+            client,
+            base: base.clone(),
+            profiles_base: base,
+        }
     }
 
     /// All manifest entries, newest first.
@@ -84,6 +94,30 @@ impl MojangMeta {
             .map(|(_, _, url)| url)
             .ok_or_else(|| ProviderError::not_found("mojang", format!("version {mc_version}")))?;
         http::get_json(&self.client, &url).await
+    }
+
+    /// Dashed canonical UUID for a Minecraft username (profiles API).
+    /// Unknown accounts answer `204 No Content` → NotFound.
+    pub async fn uuid_for_name(&self, name: &str) -> PResult<String> {
+        let url = format!(
+            "{}/users/profiles/minecraft/{}",
+            self.profiles_base,
+            http::encode_segment(name)
+        );
+        let body = http::get_text_with_retry(&self.client, &url).await?;
+        if body.trim().is_empty() {
+            return Err(ProviderError::not_found(
+                "mojang",
+                format!("profile {name}"),
+            ));
+        }
+        let json: Value = serde_json::from_str(&body)
+            .map_err(|e| ProviderError::Other(format!("invalid JSON from {url}: {e}")))?;
+        let raw = json
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ProviderError::Other("mojang profile has no id".into()))?;
+        Ok(dash_uuid(raw))
     }
 
     /// `javaVersion.majorVersion` — the authoritative Java requirement
@@ -191,6 +225,23 @@ fn synthetic_build() -> CoreBuild {
     }
 }
 
+/// The profiles API returns 32 hex chars without separators; vanilla's
+/// `whitelist.json` wants the dashed canonical form.
+fn dash_uuid(raw: &str) -> String {
+    if raw.len() == 32 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!(
+            "{}-{}-{}-{}-{}",
+            &raw[0..8],
+            &raw[8..12],
+            &raw[12..16],
+            &raw[16..20],
+            &raw[20..32]
+        )
+    } else {
+        raw.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +255,23 @@ mod tests {
     fn default_base_is_the_piston_meta_origin() {
         let meta = MojangMeta::new(crate::http::client());
         assert_eq!(meta.manifest_url(), VERSION_MANIFEST);
+    }
+
+    #[test]
+    fn dashes_only_wellformed_hex32() {
+        assert_eq!(
+            dash_uuid("5fbfba05c8934325915c0fde8bec0077"),
+            "5fbfba05-c893-4325-915c-0fde8bec0077"
+        );
+        // already dashed, wrong length, or non-hex: pass through untouched
+        assert_eq!(
+            dash_uuid("5fbfba05-c893-4325-915c-0fde8bec0077"),
+            "5fbfba05-c893-4325-915c-0fde8bec0077"
+        );
+        assert_eq!(dash_uuid("short"), "short");
+        assert_eq!(
+            dash_uuid("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"),
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        );
     }
 }

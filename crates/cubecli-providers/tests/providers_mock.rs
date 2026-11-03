@@ -53,6 +53,38 @@ async fn mojang_mock() -> (MockServer, Arc<cubecli_providers::mojang::MojangMeta
 // mojang
 
 #[tokio::test]
+async fn mojang_uuid_lookup_dashes_hits_and_maps_misses_to_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/users/profiles/minecraft/CodeFlusher"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "5fbfba05c8934325915c0fde8bec0077",
+            "name": "CodeFlusher"
+        })))
+        .mount(&server)
+        .await;
+    // unknown accounts answer 204 No Content with an empty body
+    Mock::given(method("GET"))
+        .and(path("/users/profiles/minecraft/nobody"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let meta = Arc::new(cubecli_providers::mojang::MojangMeta::with_base(
+        client(),
+        server.uri(),
+    ));
+    let uuid = meta.uuid_for_name("CodeFlusher").await.unwrap();
+    assert_eq!(uuid, "5fbfba05-c893-4325-915c-0fde8bec0077");
+
+    let err = meta.uuid_for_name("nobody").await.unwrap_err();
+    assert!(matches!(
+        err,
+        cubecli_providers::ProviderError::NotFound { .. }
+    ));
+}
+
+#[tokio::test]
 async fn mojang_versions_filter_snapshots_and_plan() {
     let server = MockServer::start().await;
     let version_json = json!({

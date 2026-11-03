@@ -65,6 +65,15 @@ pub fn sync_server_properties(meta: &ProjectMeta, layout: &ProjectLayout) -> Res
             "motd",
             &format!("{} — powered by cubecli", meta.project.slug),
         ),
+        // whitelist derives from the meta list: entries exist → check them
+        (
+            "white-list",
+            if meta.server.whitelist.is_empty() {
+                "false"
+            } else {
+                "true"
+            },
+        ),
         ("enable-rcon", "true"),
         ("rcon.port", &meta.runtime.rcon_port.to_string()),
         ("rcon.password", &secret),
@@ -75,20 +84,62 @@ pub fn sync_server_properties(meta: &ProjectMeta, layout: &ProjectLayout) -> Res
     Ok(changed)
 }
 
-/// Write `ops.json` / `whitelist.json`.
+/// Synchronous name→UUID lookup (dashed form). The caller owns the network:
+/// Mojang profiles when the server is stopped, or a prebuilt map straight
+/// from RCON-resolved entries.
+pub type UuidResolve<'a> = dyn Fn(&str) -> Option<String> + 'a;
+
+/// Write `whitelist.json` / `ops.json` from the meta lists.
 ///
-/// Vanilla requires UUID+name pairs; username→UUID resolution happens at
-/// provisioning time (or lazily via RCON on first start). Until names are
-/// resolved we only write empty files so first boot is clean.
-pub fn write_player_lists(meta: &ProjectMeta, layout: &ProjectLayout) -> Result<()> {
-    let _ = meta;
-    for name in ["ops.json", "whitelist.json"] {
-        let path = layout.root().join(name);
-        if !path.exists() {
-            std::fs::write(&path, "[]\n").map_err(|e| CoreError::io(&path, e))?;
+/// Vanilla requires UUID+name pairs; names the resolver can't answer for are
+/// skipped and reported back so the caller can tell the user (a wrong or
+/// missing UUID would silently kick the player anyway).
+///
+/// Returns the names that could not be resolved.
+pub fn write_player_lists(
+    meta: &ProjectMeta,
+    layout: &ProjectLayout,
+    resolve: &UuidResolve,
+) -> Result<Vec<String>> {
+    let mut unresolved = Vec::new();
+    write_list(
+        "whitelist.json",
+        &meta.server.whitelist,
+        layout,
+        resolve,
+        &mut unresolved,
+    )?;
+    write_list(
+        "ops.json",
+        &meta.server.ops,
+        layout,
+        resolve,
+        &mut unresolved,
+    )?;
+    Ok(unresolved)
+}
+
+fn write_list(
+    file: &str,
+    names: &[String],
+    layout: &ProjectLayout,
+    resolve: &UuidResolve,
+    unresolved: &mut Vec<String>,
+) -> Result<()> {
+    let mut entries = Vec::new();
+    for name in names {
+        match resolve(name) {
+            Some(uuid) => entries.push(serde_json::json!({ "uuid": uuid, "name": name })),
+            None => {
+                unresolved.push(name.clone());
+                continue;
+            }
         }
     }
-    Ok(())
+    let path = layout.root().join(file);
+    let json = serde_json::to_string_pretty(&entries)
+        .map_err(|e| CoreError::Meta(format!("cannot serialize {file}: {e}")))?;
+    std::fs::write(&path, json + "\n").map_err(|e| CoreError::io(&path, e))
 }
 
 #[cfg(test)]
@@ -166,7 +217,9 @@ mod tests {
     fn player_lists_created_empty() {
         let (_tmp, layout) = layout();
         let meta = ProjectMeta::default();
-        write_player_lists(&meta, &layout).unwrap();
+        let unresolved =
+            write_player_lists(&meta, &layout, &|_| unreachable!("no names to resolve")).unwrap();
+        assert!(unresolved.is_empty());
         assert_eq!(
             std::fs::read_to_string(layout.root().join("ops.json")).unwrap(),
             "[]\n"
@@ -175,5 +228,56 @@ mod tests {
             std::fs::read_to_string(layout.root().join("whitelist.json")).unwrap(),
             "[]\n"
         );
+    }
+
+    #[test]
+    fn player_lists_write_uuid_entries_and_report_unresolved() {
+        let (_tmp, layout) = layout();
+        let mut meta = ProjectMeta::default();
+        meta.server.whitelist = vec!["alice".into(), "ghost".into()];
+        meta.server.ops = vec!["bob".into()];
+
+        let known = [("alice", "uuid-alice"), ("bob", "uuid-bob")]
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let unresolved = write_player_lists(&meta, &layout, &|n: &str| {
+            known.get(n).map(|s| s.to_string())
+        })
+        .unwrap();
+        assert_eq!(unresolved, vec!["ghost".to_string()]);
+
+        let whitelist: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(layout.root().join("whitelist.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            whitelist,
+            serde_json::json!([{ "uuid": "uuid-alice", "name": "alice" }])
+        );
+        let ops: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(layout.root().join("ops.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            ops,
+            serde_json::json!([{ "uuid": "uuid-bob", "name": "bob" }])
+        );
+    }
+
+    #[test]
+    fn whitelist_flag_follows_the_meta_list() {
+        let (_tmp, layout) = layout();
+        let mut meta = ProjectMeta::default();
+
+        // empty list → white-list=false
+        sync_server_properties(&meta, &layout).unwrap();
+        let text = std::fs::read_to_string(layout.root().join("server.properties")).unwrap();
+        assert!(text.contains("white-list=false"), "{text}");
+
+        // entries → white-list=true
+        meta.server.whitelist = vec!["alice".into()];
+        sync_server_properties(&meta, &layout).unwrap();
+        let text = std::fs::read_to_string(layout.root().join("server.properties")).unwrap();
+        assert!(text.contains("white-list=true"), "{text}");
+        assert!(!text.contains("white-list=false"), "{text}");
     }
 }

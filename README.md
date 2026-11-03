@@ -33,6 +33,8 @@ cubecli project stop
 | `cubecli project install mod:sodium[@version]` | addons: `mod:`, `plugin:`, `datapack:`, `server-resource-pack:` — Modrinth keyless; CurseForge with a key |
 | `cubecli project install` | full-screen search TUI: type a query, space-select several hits, confirm, and they install through the normal pipeline |
 | `cubecli project addon-list [--outdated]` | installed addons (+ update check) |
+| `cubecli project whitelist add\|remove\|list` | whitelist entries — live via RCON on a running server, via the Mojang profiles API otherwise; `white-list` in server.properties follows the list |
+| `cubecli project op add\|remove\|list` | operators, same live/file split |
 | `cubecli project saves backup\|list\|restore [id]` | zipped world backups with RCON save-flush, TUI restore picker, safety backup before restore |
 | `cubecli project upgrade [--mc-version=X]` | core/loader upgrades |
 | `cubecli project compose` | export a validated `compose.yaml` |

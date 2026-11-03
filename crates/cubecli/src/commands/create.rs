@@ -98,7 +98,28 @@ pub async fn create(
         .map_err(|e| UserError::from(CoreError::io(layout.state_dir(), e)))?;
     managed_files::write_eula(&layout, meta.server.eula_accepted)?;
     managed_files::sync_server_properties(&meta, &layout)?;
-    managed_files::write_player_lists(&meta, &layout)?;
+    // Resolve wizard-provided player names to UUIDs now (Mojang profiles
+    // API) so whitelist.json/ops.json are usable on first boot. Failures are
+    // non-fatal: `project whitelist add` on a running server resolves via
+    // RCON instead.
+    let mut uuids = std::collections::HashMap::new();
+    for name in meta.server.whitelist.iter().chain(&meta.server.ops) {
+        if uuids.contains_key(name) {
+            continue;
+        }
+        match ctx.cores.mojang().uuid_for_name(name).await {
+            Ok(uuid) => {
+                uuids.insert(name.clone(), uuid);
+            }
+            Err(e) => println!(
+                "  note: no UUID for `{name}` ({e}) — they won't be in the player lists yet"
+            ),
+        }
+    }
+    let unresolved = managed_files::write_player_lists(&meta, &layout, &|n| uuids.get(n).cloned())?;
+    for name in unresolved {
+        println!("  note: `{name}` missing from the player lists (no UUID)");
+    }
     meta.save(layout.meta_file())?;
 
     let mut registry = Registry::load(ctx.global.registry_file())?;

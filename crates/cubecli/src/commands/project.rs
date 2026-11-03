@@ -6,6 +6,7 @@ use comfy_table::Table;
 
 use cubecli_core::ProjectHandle;
 use cubecli_core::backup;
+use cubecli_core::meta::ProjectMeta;
 use cubecli_core::meta::config_keys;
 use cubecli_core::model::{Backend, CoreBuild};
 use cubecli_core::pipeline::{self, ProvisionOptions};
@@ -14,6 +15,7 @@ use cubecli_core::traits::runtime::{
 };
 use cubecli_runtime::{ComposeBackend, NativeBackend};
 
+use crate::cli::PlayerListCommand;
 use crate::context::AppContext;
 use crate::exit::UserError;
 use crate::output::ConsoleProgress;
@@ -647,6 +649,229 @@ pub async fn addon_list(ctx: &AppContext, outdated: bool) -> Result<(), UserErro
             "update with `cubecli project install <kind>:<slug>` (reinstall picks the latest)"
         );
     }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------
+// whitelist & ops
+
+/// Which managed player list a command targets.
+#[derive(Clone, Copy, PartialEq)]
+enum ListKind {
+    Whitelist,
+    Ops,
+}
+
+impl ListKind {
+    fn file(self) -> &'static str {
+        match self {
+            ListKind::Whitelist => "whitelist.json",
+            ListKind::Ops => "ops.json",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ListKind::Whitelist => "whitelist",
+            ListKind::Ops => "ops",
+        }
+    }
+
+    fn meta_list(self, meta: &ProjectMeta) -> &Vec<String> {
+        match self {
+            ListKind::Whitelist => &meta.server.whitelist,
+            ListKind::Ops => &meta.server.ops,
+        }
+    }
+
+    fn meta_list_mut(self, meta: &mut ProjectMeta) -> &mut Vec<String> {
+        match self {
+            ListKind::Whitelist => &mut meta.server.whitelist,
+            ListKind::Ops => &mut meta.server.ops,
+        }
+    }
+
+    /// RCON commands that apply one change to a live server. The server
+    /// resolves UUIDs itself — correct for offline mode too.
+    fn live_commands(self, add: bool, name: &str) -> Vec<String> {
+        match (self, add) {
+            (ListKind::Whitelist, true) => vec![
+                format!("whitelist add {name}"),
+                "whitelist on".into(),
+                "whitelist reload".into(),
+            ],
+            (ListKind::Whitelist, false) => {
+                vec![
+                    format!("whitelist remove {name}"),
+                    "whitelist reload".into(),
+                ]
+            }
+            (ListKind::Ops, true) => vec![format!("op {name}")],
+            (ListKind::Ops, false) => vec![format!("deop {name}")],
+        }
+    }
+}
+
+pub async fn whitelist(ctx: &AppContext, command: PlayerListCommand) -> Result<(), UserError> {
+    player_list(ctx, ListKind::Whitelist, command).await
+}
+
+pub async fn op(ctx: &AppContext, command: PlayerListCommand) -> Result<(), UserError> {
+    player_list(ctx, ListKind::Ops, command).await
+}
+
+async fn player_list(
+    ctx: &AppContext,
+    kind: ListKind,
+    command: PlayerListCommand,
+) -> Result<(), UserError> {
+    let mut handle = discover()?;
+    match command {
+        PlayerListCommand::List => {
+            let list = kind.meta_list(handle.meta());
+            if list.is_empty() {
+                println!("{}: (empty)", kind.label());
+            } else {
+                for name in list {
+                    println!("{name}");
+                }
+            }
+            if kind == ListKind::Whitelist {
+                println!(
+                    "white-list is {} in server.properties ({} entries)",
+                    if list.is_empty() { "off" } else { "on" },
+                    list.len()
+                );
+            }
+            Ok(())
+        }
+        PlayerListCommand::Add { names } => {
+            let mut to_apply = Vec::new();
+            let mut meta_changed = false;
+            {
+                let list = kind.meta_list_mut(handle.meta_mut());
+                let mut seen = Vec::new();
+                for name in names {
+                    let name = name.trim().to_string();
+                    if name.is_empty() || seen.contains(&name) {
+                        continue;
+                    }
+                    seen.push(name.clone());
+                    if list.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                        // already recorded — still re-apply, repairing projects
+                        // whose player lists never made it to disk
+                        println!(
+                            "{name} is already in the {} list — re-applying",
+                            kind.label()
+                        );
+                    } else {
+                        list.push(name.clone());
+                        meta_changed = true;
+                        println!("added {name} to the {} list", kind.label());
+                    }
+                    to_apply.push(name);
+                }
+            }
+            if to_apply.is_empty() {
+                return Ok(());
+            }
+            if meta_changed {
+                handle.save()?;
+            }
+            apply_player_list(ctx, &mut handle, kind, true, &to_apply).await
+        }
+        PlayerListCommand::Remove { names } => {
+            let mut removed = Vec::new();
+            {
+                let list = kind.meta_list_mut(handle.meta_mut());
+                for name in names {
+                    let name = name.trim();
+                    let before = list.len();
+                    list.retain(|n| !n.eq_ignore_ascii_case(name));
+                    if list.len() < before {
+                        removed.push(name.to_string());
+                    }
+                }
+            }
+            if removed.is_empty() {
+                println!("none of those were in the {} list", kind.label());
+                return Ok(());
+            }
+            handle.save()?;
+            apply_player_list(ctx, &mut handle, kind, false, &removed).await
+        }
+    }
+}
+
+/// Persist a whitelist/ops change to `server.properties` and the JSON player
+/// lists. On a running server the change goes through RCON (the server then
+/// resolves UUIDs itself and rewrites its files); otherwise names are
+/// resolved via the Mojang profiles API and the files written directly.
+async fn apply_player_list(
+    ctx: &AppContext,
+    handle: &mut ProjectHandle,
+    kind: ListKind,
+    add: bool,
+    names: &[String],
+) -> Result<(), UserError> {
+    if cubecli_core::managed_files::sync_server_properties(handle.meta(), handle.layout())
+        .map_err(UserError::from)?
+    {
+        println!("  • server.properties updated");
+    }
+
+    let running = backend(ctx, handle)
+        .status(handle)
+        .await
+        .map_err(UserError::from)?
+        .is_running();
+
+    if running {
+        match cubecli_runtime::native::rcon_client(handle).await {
+            Ok(mut rcon) => {
+                for name in names {
+                    for command in kind.live_commands(add, name) {
+                        match rcon.command(&command).await {
+                            Ok(reply) => println!("{} → {}", command, reply.trim()),
+                            Err(e) => println!("{command} → error: {e}"),
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            Err(e) => println!(
+                "  • RCON unreachable ({e}) — writing files instead; applies on next start"
+            ),
+        }
+    }
+
+    let mojang = ctx.cores.mojang();
+    let mut uuids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let all = kind.meta_list(handle.meta()).clone();
+    for name in &all {
+        if uuids.contains_key(name) {
+            continue;
+        }
+        match mojang.uuid_for_name(name).await {
+            Ok(uuid) => {
+                uuids.insert(name.clone(), uuid);
+            }
+            Err(e) => println!(
+                "  • no UUID for `{name}` ({e}) — skipped; add while the server runs, or check the spelling"
+            ),
+        }
+    }
+    let unresolved =
+        cubecli_core::managed_files::write_player_lists(handle.meta(), handle.layout(), &|n| {
+            uuids.get(n).cloned()
+        })
+        .map_err(UserError::from)?;
+    println!(
+        "{} — {} of {} entries written",
+        kind.file(),
+        all.len() - unresolved.len(),
+        all.len()
+    );
     Ok(())
 }
 

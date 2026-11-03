@@ -123,6 +123,16 @@ pub enum ProjectCommand {
     },
     /// Remove an installed addon by slug
     Uninstall { slug: String },
+    /// Manage the whitelist (applied live via RCON while the server runs)
+    Whitelist {
+        #[command(subcommand)]
+        command: PlayerListCommand,
+    },
+    /// Manage operators (ops)
+    Op {
+        #[command(subcommand)]
+        command: PlayerListCommand,
+    },
     /// Upgrade the server core to the latest build (optionally bump MC version)
     Upgrade {
         /// Only check whether an upgrade exists
@@ -144,6 +154,21 @@ pub enum ProjectCommand {
     },
     /// Export a docker-compose.yaml for this project
     Compose,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PlayerListCommand {
+    /// Add player(s): UUIDs resolve via Mojang, or live via RCON on a
+    /// running server
+    Add {
+        /// Minecraft username(s)
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Remove player(s)
+    Remove { names: Vec<String> },
+    /// Show the configured players
+    List,
 }
 
 #[derive(Debug, Subcommand)]

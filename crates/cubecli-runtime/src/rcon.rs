@@ -65,31 +65,46 @@ impl RconClient {
     }
 
     /// Run a command, returning the concatenated response text.
+    ///
+    /// The multi-packet workaround reads the FIRST response fragment before
+    /// sending the trailing sentinel: vanilla's RCON server closes the
+    /// connection when two packets land in the same read, so a
+    /// send-command + send-sentinel pipeline corrupts the stream (reproduced
+    /// against 26.x — the command even executed, the reply was just lost).
     pub async fn command(&mut self, command: &str) -> Result<String> {
         self.send(SERVERDATA_EXECCOMMAND, 7, command).await?;
-        // Sentinel marks the end of (possibly multi-packet) responses.
-        self.send(SERVERDATA_EXECCOMMAND, SENTINEL_ID, SENTINEL_PAYLOAD)
-            .await?;
 
         let mut out = Vec::new();
         let deadline = tokio::time::Instant::now() + READ_TIMEOUT;
-        loop {
-            let (ptype, id, payload) = tokio::time::timeout_at(deadline, self.read_packet())
-                .await
-                .map_err(|_| RuntimeError::Rcon("timeout waiting for response".into()))??;
-            if id == SENTINEL_ID {
-                break;
-            }
-            if ptype == SERVERDATA_RESPONSE_VALUE {
-                if out.len() + payload.len() > MAX_RESPONSE {
-                    return Err(RuntimeError::Rcon("response exceeds 1 MiB cap".into()));
-                }
-                out.extend_from_slice(&payload);
-            }
-        }
+        self.next_response(deadline, &mut out).await?;
+        self.send(SERVERDATA_EXECCOMMAND, SENTINEL_ID, SENTINEL_PAYLOAD)
+            .await?;
+        while !self.next_response(deadline, &mut out).await? {}
+
         Ok(String::from_utf8_lossy(&out)
             .trim_end_matches('\n')
             .to_string())
+    }
+
+    /// Read one response packet into `out`; true when it is the sentinel.
+    async fn next_response(
+        &mut self,
+        deadline: tokio::time::Instant,
+        out: &mut Vec<u8>,
+    ) -> Result<bool> {
+        let (ptype, id, payload) = tokio::time::timeout_at(deadline, self.read_packet())
+            .await
+            .map_err(|_| RuntimeError::Rcon("timeout waiting for response".into()))??;
+        if id == SENTINEL_ID {
+            return Ok(true);
+        }
+        if ptype == SERVERDATA_RESPONSE_VALUE {
+            if out.len() + payload.len() > MAX_RESPONSE {
+                return Err(RuntimeError::Rcon("response exceeds 1 MiB cap".into()));
+            }
+            out.extend_from_slice(&payload);
+        }
+        Ok(false)
     }
 
     async fn send(&mut self, ptype: i32, id: i32, payload: &str) -> Result<()> {
@@ -138,7 +153,6 @@ impl RconClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt as _;
 
     /// A tiny fake RCON server speaking the protocol — golden-path byte check.
     #[tokio::test]
@@ -185,6 +199,31 @@ mod tests {
         });
         let err = connect(addr, "wrong").await.unwrap_err();
         assert!(err.to_string().contains("authentication failed"));
+    }
+
+    /// Large answers arrive as several RESPONSE_VALUE fragments, possibly all
+    /// before the sentinel is even sent — they must concatenate in order.
+    #[tokio::test]
+    async fn multi_fragment_responses_concatenate() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _ = read_one(&mut sock).await;
+            write_one(&mut sock, SERVERDATA_AUTH_RESPONSE, 1, b"").await;
+            let (_, id, _) = read_one(&mut sock).await;
+            assert_eq!(id, 7);
+            // both fragments go out before the client sends the sentinel
+            write_one(&mut sock, SERVERDATA_RESPONSE_VALUE, 7, b"part1,").await;
+            write_one(&mut sock, SERVERDATA_RESPONSE_VALUE, 7, b"part2").await;
+            let (_, sid, _) = read_one(&mut sock).await;
+            assert_eq!(sid, SENTINEL_ID);
+            write_one(&mut sock, SERVERDATA_RESPONSE_VALUE, SENTINEL_ID, b"").await;
+        });
+
+        let mut client = connect(addr, "secret").await.unwrap();
+        let reply = client.command("big").await.unwrap();
+        assert_eq!(reply, "part1,part2");
     }
 
     async fn read_one(sock: &mut TcpStream) -> (i32, i32, Vec<u8>) {

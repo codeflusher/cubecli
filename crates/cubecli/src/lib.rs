@@ -57,6 +57,8 @@ async fn project(command: ProjectCommand) -> CmdResult {
         AddonList { outdated } => commands::project::addon_list(&ctx, outdated).await,
         Install { addon, source } => commands::project::install(&ctx, addon, source).await,
         Uninstall { slug } => commands::project::uninstall(slug).await,
+        Whitelist { command } => commands::project::whitelist(&ctx, command).await,
+        Op { command } => commands::project::op(&ctx, command).await,
         Upgrade { check, mc_version } => commands::project::upgrade(&ctx, check, mc_version).await,
         Config { key_value } => commands::project::config(key_value).await,
         Saves { command } => match command {
