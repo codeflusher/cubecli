@@ -8,6 +8,7 @@ pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod java;
+pub mod jvm;
 pub mod managed_files;
 pub mod meta;
 pub mod model;

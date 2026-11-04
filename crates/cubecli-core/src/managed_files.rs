@@ -51,6 +51,30 @@ pub fn write_eula(layout: &ProjectLayout, accepted: bool) -> Result<()> {
     std::fs::write(&path, text).map_err(|e| CoreError::io(&path, e))
 }
 
+/// Rewrite the `-Xmx` line in `user_jvm_args.txt` (forge/neoforge launch via
+/// `@argfile`, so the JVM flags live in that file, not in the argv). Returns
+/// true when the file changed; a missing file means nothing to manage.
+pub fn apply_max_heap(layout: &ProjectLayout, value: Option<&str>) -> Result<bool> {
+    let path = layout.root().join("user_jvm_args.txt");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|line| !line.starts_with("-Xms") && !line.starts_with("-Xmx"))
+        .map(str::to_string)
+        .collect();
+    if let Some(v) = value {
+        lines.push(format!("-Xmx{v}"));
+    }
+    let new_text = lines.join("\n") + "\n";
+    if new_text == text {
+        return Ok(false);
+    }
+    std::fs::write(&path, &new_text).map_err(|e| CoreError::io(&path, e))?;
+    Ok(true)
+}
+
 /// Sync cubecli-managed keys into `server.properties` (targeted line edits;
 /// other content is untouched). Returns true when anything changed.
 pub fn sync_server_properties(meta: &ProjectMeta, layout: &ProjectLayout) -> Result<bool> {

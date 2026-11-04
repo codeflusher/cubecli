@@ -9,7 +9,9 @@
   Minecraft version into `~/.cubecli/jdks/` (Adoptium Temurin). Existing
   [sdkman](https://sdkman.io) JDKs are picked up too; a system `java` on
   PATH works as an unrecommended fallback.
-- **Platforms**: macOS (primary) and Linux. Windows is not supported yet.
+- **Platforms**: macOS (primary) and Linux. On Windows, run cubecli inside
+  **WSL2** (see the Docker & WSL2 section below); native Windows support is
+  planned.
 - **Docker** (optional) — only if you switch a project to the compose
   backend with `cubecli project config backend=compose`.
 
@@ -71,7 +73,34 @@ all keys).
 Prefer no wizard? `cubecli create --yes --core paper` accepts defaults;
 `--mc-version` overrides the version.
 
-## 5. Enable the daemon (recommended)
+## 5. Docker & WSL2
+
+The compose backend runs the server in a container instead of a local JVM —
+same project layout, same RCON console, same backups:
+
+```bash
+cubecli project config backend=compose   # switch (takes effect on next start)
+cubecli project compose                  # inspect/export the compose.yaml
+```
+
+On **Windows, use WSL2** (Windows is not natively supported yet):
+
+1. Install Docker Desktop and enable **Settings → Resources → WSL
+   integration** for your distro.
+2. Keep server projects in the **WSL filesystem** (e.g. `~/servers/my-server`),
+   not under `/mnt/c` — Windows mounts are slow and slow world saves.
+3. The daemon needs a systemd user session, which WSL ships without:
+   add `[boot] systemd=true` to `/etc/wsl.conf`, then run `wsl --shutdown`
+   from Windows and reopen your distro.
+4. `cubecli doctor` checks all of the above in one shot — docker, WSL
+   version, project location, daemon, and (inside a project) RCON
+   reachability, each with a fix-it hint.
+
+`DOCKER_HOST` and docker contexts work as usual (cubecli shells out to the
+`docker` CLI). If `docker` exists but the compose plugin doesn't, doctor and
+the start/stop commands say so instead of surfacing cryptic CLI errors.
+
+## 6. Enable the daemon (recommended)
 
 The daemon runs crash-restarts (`unless-stopped` policy), scheduled
 backups, and addon auto-upgrades:

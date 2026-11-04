@@ -24,6 +24,10 @@ type CmdResult = Result<(), exit::UserError>;
 
 async fn dispatch(command: Command) -> CmdResult {
     match command {
+        Command::Doctor => {
+            let ctx = context::AppContext::load()?;
+            commands::doctor::doctor(&ctx).await
+        }
         Command::Create {
             path,
             yes,

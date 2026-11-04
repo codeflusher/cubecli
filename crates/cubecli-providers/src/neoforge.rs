@@ -162,6 +162,10 @@ impl ServerCoreProvider for NeoForgeProvider {
         ))
         .map_err(|e| ProviderError::Other(format!("bad neoforge url: {e}")))?;
         let java = self.java_requirement(mc_version).await?;
+        // The NeoForge installer emits run.sh + run.bat and
+        // unix_args.txt + windows_args.txt on every host — pick the host's
+        // pair (the compose backend maps back for the linux container).
+        let script: &str = if cfg!(windows) { "run.bat" } else { "run.sh" };
 
         Ok(InstallPlan {
             java: JavaRequirement { major: java },
@@ -181,7 +185,7 @@ impl ServerCoreProvider for NeoForgeProvider {
                     ],
                     needs_java: true,
                     timeout: Duration::from_secs(15 * 60),
-                    expect_paths: vec!["run.sh".into()],
+                    expect_paths: vec![script.into()],
                 },
                 // Installer creates a template user_jvm_args.txt; append heap flags.
                 PostInstallStep::WriteTextFile {
@@ -190,7 +194,7 @@ impl ServerCoreProvider for NeoForgeProvider {
                 },
             ],
             launch: LaunchSpec::Script {
-                script: "run.sh".into(),
+                script: script.into(),
                 args: vec!["nogui".into()],
             },
         })

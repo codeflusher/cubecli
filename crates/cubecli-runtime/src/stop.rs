@@ -65,13 +65,14 @@ pub async fn graceful(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // 3. SIGTERM the process group (shutdown hooks still save)
+    // 3. SIGTERM the process group (unix) / taskkill the tree (windows) —
+    // shutdown hooks still save the world
     if {
         reap_children();
         signals::pid_alive(pf.pid)
     } {
         stage = StopStage::Signal;
-        signals::kill_group(pf.pid, signals::SIGTERM);
+        terminate_tree(pf.pid);
         let term_deadline = Instant::now() + grace.term;
         loop {
             reap_children();
@@ -82,13 +83,13 @@ pub async fn graceful(
         }
     }
 
-    // 4. SIGKILL
+    // 4. SIGKILL (unix) / taskkill /F (windows)
     if {
         reap_children();
         signals::pid_alive(pf.pid)
     } {
         stage = StopStage::Kill;
-        signals::kill_group(pf.pid, signals::SIGKILL);
+        force_kill_tree(pf.pid);
         let kill_deadline = Instant::now() + Duration::from_secs(5);
         loop {
             reap_children();
@@ -120,7 +121,10 @@ pub fn clear_manual_stop(layout: &ProjectLayout) {
     let _ = std::fs::remove_file(layout.manually_stopped_marker());
 }
 
-fn write_manual_stop(layout: &ProjectLayout) {
+/// Write the manually-stopped marker. Also used by the compose backend —
+/// every explicit stop must lay the marker down BEFORE the stop call lands
+/// (the daemon ticks concurrently).
+pub(crate) fn write_manual_stop(layout: &ProjectLayout) {
     let marker = layout.manually_stopped_marker();
     if let Some(parent) = marker.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -145,6 +149,49 @@ fn reap_children() {
 
 #[cfg(not(unix))]
 fn reap_children() {}
+
+/// Graceful-ish tree termination: SIGTERM to the process group (unix) or
+/// `taskkill /T` without /F (windows — sends WM_CLOSE; a JVM mostly ignores
+/// it, but it is the polite step before the hard kill).
+#[cfg(unix)]
+fn terminate_tree(pid: u32) {
+    signals::kill_group(pid, signals::SIGTERM);
+}
+
+#[cfg(windows)]
+fn terminate_tree(pid: u32) {
+    let _ = taskkill(pid, false);
+}
+
+/// Hard tree kill: SIGKILL (unix) or `taskkill /T /F` (windows).
+#[cfg(unix)]
+fn force_kill_tree(pid: u32) {
+    signals::kill_group(pid, signals::SIGKILL);
+}
+
+#[cfg(windows)]
+fn force_kill_tree(pid: u32) {
+    let _ = taskkill(pid, true);
+}
+
+/// Windows tree kill via the bundled CLI. `/T` walks child processes, `/F`
+/// terminates unconditionally.
+#[cfg(windows)]
+fn taskkill(pid: u32, force: bool) -> bool {
+    let mut cmd = std::process::Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T"]);
+    if force {
+        cmd.arg("/F");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd.output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
 
 fn rcon_port_of(layout: &ProjectLayout) -> u16 {
     // Read from server.properties (source of truth for the running server);

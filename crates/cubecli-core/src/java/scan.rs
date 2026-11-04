@@ -61,25 +61,40 @@ impl FsJavaLocator {
     }
 
     fn scan_system(&self) -> Vec<JavaInstall> {
-        let Some(which) = which_java() else {
-            return vec![];
-        };
-        let Some(feature) = detect_feature(&which) else {
-            return vec![];
-        };
-        let home = java_home(&which).unwrap_or_else(|| {
-            which
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("/"))
-        });
-        vec![JavaInstall {
-            feature,
-            origin: JavaOrigin::System,
-            home,
-            java_bin: which,
-        }]
+        let mut found = Vec::new();
+
+        // JAVA_HOME before PATH: the user pointed at a JVM explicitly.
+        if let Some(home) = java_home_env() {
+            if let Some(java_bin) = detect_java_bin(&home) {
+                if let Some(feature) = detect_feature(&java_bin) {
+                    found.push(JavaInstall {
+                        feature,
+                        origin: JavaOrigin::System,
+                        home,
+                        java_bin,
+                    });
+                }
+            }
+        }
+
+        if let Some(which) = which_java() {
+            if let Some(feature) = detect_feature(&which) {
+                let home = java_home(&which).unwrap_or_else(|| {
+                    which
+                        .parent()
+                        .and_then(Path::parent)
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| PathBuf::from("/"))
+                });
+                found.push(JavaInstall {
+                    feature,
+                    origin: JavaOrigin::System,
+                    home,
+                    java_bin: which,
+                });
+            }
+        }
+        found
     }
 }
 
@@ -132,9 +147,14 @@ fn scan_numeric_dirs(root: &Path, origin: JavaOrigin) -> Vec<JavaInstall> {
         .collect()
 }
 
-/// `dir` is a JAVA_HOME candidate: try the macOS layout (Contents/Home) first.
+/// `dir` is a JAVA_HOME candidate: try the macOS layout (Contents/Home) first,
+/// then the plain layout, with `.exe` variants on Windows.
 fn detect_java_bin(dir: &Path) -> Option<PathBuf> {
-    let candidates = [dir.join("Contents/Home/bin/java"), dir.join("bin/java")];
+    let stem = if cfg!(windows) { "java.exe" } else { "java" };
+    let candidates = [
+        dir.join("Contents/Home/bin").join(stem),
+        dir.join("bin").join(stem),
+    ];
     candidates.into_iter().find(|p| p.exists())
 }
 
@@ -142,8 +162,23 @@ fn detect_java_bin(dir: &Path) -> Option<PathBuf> {
 fn which_java() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("java"))
+        .map(|dir| dir.join(java_exe()))
         .find(|candidate| candidate.is_file())
+}
+
+fn java_exe() -> &'static str {
+    if cfg!(windows) {
+        "java.exe"
+    } else {
+        "java"
+    }
+}
+
+/// `$JAVA_HOME` when it points at a real JDK layout.
+fn java_home_env() -> Option<PathBuf> {
+    let home = std::env::var_os("JAVA_HOME")?;
+    let home = PathBuf::from(home);
+    detect_java_bin(&home).map(|_| home)
 }
 
 /// `java -version` stderr: `openjdk version "21.0.5"` / `1.8.0_412`.

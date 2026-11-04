@@ -73,6 +73,11 @@ pub const KEYS: &[KeyInfo] = &[
         kind: "native|compose",
         description: "who owns the server process",
     },
+    KeyInfo {
+        name: "max-heap",
+        kind: "e.g. 4G",
+        description: "JVM max heap (-Xmx); empty = provider default",
+    },
 ];
 
 pub fn list() -> &'static [KeyInfo] {
@@ -93,6 +98,7 @@ pub fn get(meta: &ProjectMeta, key: &str) -> Result<String> {
         "restart-cron" => meta.runtime.restart_cron.clone(),
         "eula" => meta.server.eula_accepted.to_string(),
         "backend" => meta.runtime.backend.slug().to_string(),
+        "max-heap" => meta.runtime.max_heap.clone().unwrap_or_default(),
         other => return Err(unknown_key(other)),
     };
     Ok(value)
@@ -213,6 +219,16 @@ pub fn set(meta: &mut ProjectMeta, key: &str, value: &str) -> Result<Vec<String>
             }
             meta.runtime.backend = backend;
         }
+        "max-heap" => {
+            if value.is_empty() {
+                meta.runtime.max_heap = None;
+            } else {
+                crate::jvm::parse_max_heap(value)
+                    .map_err(|e| CoreError::invalid_config(key, e))?;
+                meta.runtime.max_heap = Some(value.to_string());
+            }
+            warnings.push("max-heap changed — restart the server to apply".into());
+        }
         other => return Err(unknown_key(other)),
     }
     Ok(warnings)
@@ -309,6 +325,18 @@ mod tests {
         assert!(set(&mut meta, "restart-cron", "6h").is_err());
         set(&mut meta, "restart-cron", "*/30 * * * *").unwrap();
         assert_eq!(meta.runtime.restart_cron, "*/30 * * * *");
+    }
+
+    #[test]
+    fn set_max_heap_validates_and_clears() {
+        let mut meta = ProjectMeta::default();
+        set(&mut meta, "max-heap", "2G").unwrap();
+        assert_eq!(meta.runtime.max_heap.as_deref(), Some("2G"));
+        assert_eq!(get(&meta, "max-heap").unwrap(), "2G");
+        assert!(set(&mut meta, "max-heap", "nonsense").is_err());
+        assert!(set(&mut meta, "max-heap", "4").is_err(), "unit is required");
+        set(&mut meta, "max-heap", "").unwrap();
+        assert_eq!(meta.runtime.max_heap, None);
     }
 
     #[test]

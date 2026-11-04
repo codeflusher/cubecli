@@ -73,11 +73,20 @@ pub async fn run(interval_secs: u64) -> Result<(), UserError> {
     });
 
     loop {
+        // ctrl_c gives a clean shutdown on every platform (Windows services
+        // need an explicit stop handler — the scheduled task just terminates
+        // us, which is safe: every tick persists its state).
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("interrupted — daemon shutting down");
+                break Ok(());
+            }
+            _ = tokio::time::sleep(interval) => {}
+        }
         if let Err(e) = tick(&ctx).await {
             tracing::error!("tick failed: {e}");
         }
         let _ = std::fs::write(ctx.global.heartbeat_file(), Utc::now().to_rfc3339());
-        tokio::time::sleep(interval).await;
     }
 }
 
@@ -100,10 +109,17 @@ async fn tick(ctx: &AppContext) -> Result<(), UserError> {
 
         let mut state = cubecli_core::daemon::state::load(&state_path).unwrap_or_default();
         let backend = crate::commands::project::backend(ctx, &handle);
-        let status = backend.status(&handle).await.unwrap_or_else(|e| {
-            tracing::warn!("{slug}: status failed: {e}");
-            cubecli_core::traits::runtime::RuntimeStatus::Unknown
-        });
+        // A status error (docker daemon down, …) is not "stopped": treating
+        // it as not-running restart-storms a dead docker, and running
+        // decide()/update_state_after_tick anyway corrupts the backoff
+        // bookkeeping. Skip the whole project for this tick.
+        let status = match backend.status(&handle).await {
+            Ok(status) => status,
+            Err(e) => {
+                tracing::warn!("{slug}: status failed ({e}) — skipping this tick");
+                continue;
+            }
+        };
         let running = status.is_running();
         let manually_stopped = handle.layout().manually_stopped_marker().exists();
         // Unclean death (pidfile present, process gone) — crash evidence.
@@ -315,6 +331,15 @@ pub async fn install() -> Result<(), UserError> {
         log_out: global.daemon_out_log(),
         log_err: global.daemon_err_log(),
     };
+    // systemd user units need a systemd session — WSL ships without one
+    // unless explicitly enabled, and the error must say how to fix that.
+    if cubecli_runtime::service::detect() == "systemd"
+        && !cubecli_runtime::env::systemd_available()
+    {
+        return Err(UserError::new("systemd user session is not available").with_hint(
+            "inside WSL: add `[boot] systemd=true` to /etc/wsl.conf, then run `wsl --shutdown` from Windows; on Linux: check `systemctl --user` works",
+        ));
+    }
     cubecli_runtime::service::install(&spec).map_err(UserError::from)?;
     println!(
         "daemon installed as {} service: {}",
@@ -338,7 +363,7 @@ pub async fn uninstall() -> Result<(), UserError> {
 
 pub async fn status() -> Result<(), UserError> {
     let installed = cubecli_runtime::service::installed_path();
-    if !installed.exists() {
+    if !cubecli_runtime::service::is_installed() {
         println!("daemon: not installed ({})", installed.display());
         return Ok(());
     }

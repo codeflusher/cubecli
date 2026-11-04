@@ -339,3 +339,34 @@ fn setup_curseforge_stores_key_in_redirected_home() {
     let (mut cmd, _env) = cli();
     cmd.args(["setup", "curseforge", "   "]).assert().failure();
 }
+
+// ------------------------------------------------------------------------------------------------
+// doctor
+
+#[test]
+fn doctor_reports_checks_offline() {
+    let (mut cmd, _env) = cli();
+    // Values vary by machine (docker may exist, JDKs may be installed), so
+    // assert the structure: section names and the summary line.
+    cmd.args(["doctor"])
+        .env("CUBECLI_DOCKER_BIN", "/nonexistent/cubecli-fake-docker")
+        .assert()
+        .failure() // docker check fails offline — doctor exits 1 on Fail
+        .stdout(contains("cubecli doctor"))
+        .stdout(contains("docker"))
+        .stdout(contains("java"))
+        .stdout(contains("daemon"))
+        .stdout(contains("no project in this directory"));
+}
+
+#[test]
+fn doctor_inside_a_project_includes_project_checks() {
+    let (mut cmd, env) = cli();
+    let project = create_project(&env, "doc-server");
+    cmd.current_dir(&project)
+        .env("CUBECLI_DOCKER_BIN", "/nonexistent/cubecli-fake-docker")
+        .args(["doctor"])
+        .assert()
+        .stdout(contains("project/eula"))
+        .stdout(contains("NOT accepted"));
+}

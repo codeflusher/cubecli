@@ -66,6 +66,8 @@ pub struct RuntimeSection {
     pub rcon_port: u16,
     pub pvp: bool,
     pub level_name: String,
+    /// JVM max heap (`4G`, `512M`) — `-Xmx` override for both backends.
+    pub max_heap: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -136,6 +138,7 @@ impl Default for RuntimeSection {
             rcon_port: 25575,
             pvp: true,
             level_name: "world".into(),
+            max_heap: None,
         }
     }
 }
@@ -307,6 +310,7 @@ mod tests {
                 rcon_port: 25575,
                 pvp: true,
                 level_name: "world".into(),
+                max_heap: Some("4G".into()),
             },
             backup: BackupSection {
                 auto: true,
@@ -339,8 +343,9 @@ mod tests {
         let text = toml::to_string_pretty(&meta).unwrap();
         let parsed = migrate::load_from_str(&text).unwrap();
         assert_eq!(parsed, meta);
-        assert!(text.contains("schema_version = 1"));
+        assert!(text.contains(&format!("schema_version = {}", CURRENT_SCHEMA_VERSION)));
         assert!(text.contains("unless-stopped"));
+        assert!(text.contains("max_heap"));
     }
 
     #[test]
@@ -352,6 +357,16 @@ mod tests {
         assert_eq!(meta.server.core, CoreKind::Fabric);
         assert_eq!(meta.runtime.port, 25565);
         assert!(!meta.server.eula_accepted);
+        assert_eq!(meta.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v1_file_migrates_to_current_with_max_heap_default() {
+        let text = "[project]\nslug = \"old\"\nschema_version = 1\n[runtime]\nport = 25570\n";
+        let meta = migrate::load_from_str(text).unwrap();
+        assert_eq!(meta.project.slug, "old");
+        assert_eq!(meta.runtime.port, 25570);
+        assert_eq!(meta.runtime.max_heap, None, "v2 default");
         assert_eq!(meta.schema_version, CURRENT_SCHEMA_VERSION);
     }
 

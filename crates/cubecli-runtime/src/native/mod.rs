@@ -108,6 +108,20 @@ impl RuntimeBackend for NativeBackend {
             })?;
 
         let argv = launch.argv(&java.java_bin);
+        // Explicit max-heap wins over provider-authored flags. Jar launches
+        // only — ArgFile JVM flags live in user_jvm_args.txt (rewritten by
+        // managed_files::apply_max_heap), and Script launches are opaque.
+        let argv = if matches!(launch, cubecli_core::model::LaunchSpec::Jar { .. }) {
+            let merged = cubecli_core::jvm::merge_jvm_args(
+                &argv[1..],
+                meta.runtime.max_heap.as_deref(),
+            );
+            std::iter::once(argv[0].clone())
+                .chain(merged)
+                .collect::<Vec<String>>()
+        } else {
+            argv
+        };
         let pid = spawn::spawn_detached(
             &java.java_bin,
             &argv,
@@ -140,7 +154,13 @@ impl RuntimeBackend for NativeBackend {
     }
 
     async fn restart(&self, project: &ProjectHandle) -> Result<RuntimeStatus> {
-        self.stop(project, StopGrace::default()).await?;
+        // Not a manual stop: restart is daemon-initiated (cron) or a user
+        // convenience — it must not leave the manually-stopped marker down,
+        // or a failed start would read as "user stopped it" and the daemon
+        // would never recover the server.
+        stop::graceful(project.layout(), StopGrace::default(), false)
+            .await
+            .map_err(CoreError::from)?;
         self.start(project).await
     }
 
@@ -183,5 +203,9 @@ impl RuntimeBackend for NativeBackend {
         tail::follow(project.layout().server_log(), tx, cancel)
             .await
             .map_err(CoreError::from)
+    }
+
+    async fn read_logs(&self, project: &ProjectHandle, lines: usize) -> Result<Vec<String>> {
+        tail::last_lines(&project.layout().server_log(), lines).map_err(CoreError::from)
     }
 }

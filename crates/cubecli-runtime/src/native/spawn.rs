@@ -34,18 +34,24 @@ pub fn spawn_detached(
     })?;
 
     let mut cmd = std::process::Command::new(java_bin);
+    // java's bin dir first, then the inherited PATH (join_paths picks the
+    // platform separator).
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        [java_bin
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| Path::new("/usr/bin").to_path_buf())]
+        .into_iter()
+        .chain(std::env::split_paths(&inherited)),
+    )
+    .unwrap_or(inherited);
     cmd.args(argv.iter().skip(1))
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
-        .env("PATH", {
-            let mut p =
-                std::ffi::OsString::from(java_bin.parent().unwrap_or(Path::new("/usr/bin")));
-            p.push(":");
-            p.push(std::env::var_os("PATH").unwrap_or_default());
-            p
-        });
+        .env("PATH", path);
 
     // New session: full detach from the controlling terminal, pgid == pid.
     #[cfg(unix)]
@@ -55,6 +61,15 @@ pub fn spawn_detached(
             libc::setsid();
             Ok(())
         });
+    }
+
+    // Windows: no setsid — just avoid flashing a console window. (Group
+    // lifecycle differs until the native Windows backend; stop uses
+    // taskkill /T.)
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
 
     let child = cmd.spawn().map_err(|e| {

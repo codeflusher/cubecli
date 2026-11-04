@@ -48,7 +48,7 @@ impl AdoptiumClient {
         } else if cfg!(target_os = "linux") {
             "linux"
         } else {
-            unimplemented!("windows support lands with the compose backend polish")
+            "windows"
         }
     }
 
@@ -125,12 +125,20 @@ impl AdoptiumClient {
         let archive = dir.join(&archive_name);
         download_to(&self.client, &link, &archive, checksum.as_ref(), progress).await?;
 
+        // Windows Adoptium assets are `.zip`; everything else `.tar.gz`.
         progress.message(&format!("extracting {archive_name}"));
+        let is_zip = archive_name.ends_with(".zip");
         let dir_clone = dir.clone();
         let archive_clone = archive.clone();
-        tokio::task::spawn_blocking(move || extract_tar_gz(&archive_clone, &dir_clone))
-            .await
-            .map_err(|e| ProviderError::Other(e.to_string()))??;
+        tokio::task::spawn_blocking(move || {
+            if is_zip {
+                extract_zip(&archive_clone, &dir_clone)
+            } else {
+                extract_tar_gz(&archive_clone, &dir_clone)
+            }
+        })
+        .await
+        .map_err(|e| ProviderError::Other(e.to_string()))??;
         let _ = tokio::fs::remove_file(&archive).await;
 
         match Self::detect_install(&dir) {
@@ -234,6 +242,52 @@ impl AdoptiumClient {
             .unwrap_or(21) as u32;
         Ok((lts, most_recent_lts))
     }
+}
+
+/// Extract a `.zip` (Windows Adoptium assets), stripping the archive's
+/// leading directory (`jdk-21.0.13+9/…` → straight into `dir`) — the same
+/// contract as [`extract_tar_gz`]. `enclosed_name()` rejects path escapes.
+fn extract_zip(archive: &Path, dir: &Path) -> PResult<()> {
+    let file = std::fs::File::open(archive).map_err(|e| ProviderError::io(archive, e))?;
+    let mut zip =
+        zip::ZipArchive::new(file).map_err(|e| ProviderError::Other(e.to_string()))?;
+    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    for index in 0..zip.len() {
+        let mut entry = zip
+            .by_index(index)
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
+        let Some(path) = entry.enclosed_name() else {
+            let name = entry
+                .name()
+                .map(|n| n.into_owned())
+                .unwrap_or_else(|_| "<undecodable name>".into());
+            return Err(ProviderError::Other(format!(
+                "refusing suspicious archive path: {name}"
+            )));
+        };
+        // Strip the package directory, mirroring the tar extractor. A bare
+        // entry with no leading package dir is kept whole.
+        let stripped: PathBuf = path.components().skip(1).collect();
+        let stripped = if stripped.as_os_str().is_empty() {
+            &path
+        } else {
+            &stripped
+        };
+        if stripped.as_os_str().is_empty() {
+            continue;
+        }
+        let dest = canonical_dir.join(stripped);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&dest).map_err(|e| ProviderError::io(&dest, e))?;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ProviderError::io(parent, e))?;
+        }
+        let mut out = std::fs::File::create(&dest).map_err(|e| ProviderError::io(&dest, e))?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| ProviderError::io(&dest, e))?;
+    }
+    Ok(())
 }
 
 /// Convenience used by `setup java install`: install then report.

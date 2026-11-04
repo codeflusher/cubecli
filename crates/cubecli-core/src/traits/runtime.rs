@@ -19,11 +19,15 @@ pub enum RuntimeId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeStatus {
     Running {
+        /// OS pid when the backend owns the process; `None` for backends
+        /// that delegate to an external supervisor (compose containers).
         pid: Option<u32>,
         started_at: Option<DateTime<Utc>>,
     },
     Stopped {
         /// false when the process died without a clean stop (crash).
+        /// Backends must derive this from the supervisor's exit code
+        /// (compose) or a stale pidfile (native) — never blanket-true.
         clean: bool,
     },
     Unknown,
@@ -76,14 +80,22 @@ pub trait RuntimeBackend: Send + Sync {
     fn id(&self) -> RuntimeId;
 
     /// Idempotent — starting a running server reports its status.
+    /// Clears the manually-stopped marker (start is always intentional).
     async fn start(&self, project: &ProjectHandle) -> Result<RuntimeStatus>;
 
-    /// RCON `stop` → grace → SIGTERM process group → SIGKILL.
+    /// Stop the server. Every backend writes the manually-stopped marker
+    /// FIRST — the daemon ticks concurrently and must not "crash-restart"
+    /// the server being deliberately stopped — so `unless-stopped`/`cron`
+    /// policies leave it down after an explicit stop.
     async fn stop(&self, project: &ProjectHandle, grace: StopGrace) -> Result<StopOutcome>;
 
+    /// Stop + start through the backend's own path. Must not leave the
+    /// manually-stopped marker down (it is a daemon-initiated operation).
     async fn restart(&self, project: &ProjectHandle) -> Result<RuntimeStatus>;
 
-    /// RCON auth probe is the authority; the pidfile is only a hint.
+    /// Backend state is the authority (pidfile+RCON probe, or the
+    /// supervisor's exit code); a dead-but-tracked server is
+    /// `Stopped { clean: false }` so the daemon can crash-restart.
     async fn status(&self, project: &ProjectHandle) -> Result<RuntimeStatus>;
 
     /// Streams log lines until `cancel` fires.
@@ -93,4 +105,7 @@ pub trait RuntimeBackend: Send + Sync {
         tx: mpsc::Sender<String>,
         cancel: CancellationToken,
     ) -> Result<()>;
+
+    /// Read the last `lines` log lines without following.
+    async fn read_logs(&self, project: &ProjectHandle, lines: usize) -> Result<Vec<String>>;
 }

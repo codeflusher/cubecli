@@ -63,7 +63,17 @@ impl LaunchSpec {
                 v
             }
             Self::Script { script, args } => {
-                let mut v = vec!["sh".into(), script.clone()];
+                // Windows batch files go through cmd; unix scripts through sh.
+                let interpreter: String = if cfg!(windows) {
+                    "cmd".into()
+                } else {
+                    "sh".into()
+                };
+                let mut v = vec![interpreter];
+                if cfg!(windows) {
+                    v.push("/C".into());
+                }
+                v.push(script.clone());
                 v.extend(args.iter().cloned());
                 v
             }

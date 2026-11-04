@@ -1,6 +1,6 @@
 use crate::error::{CoreError, Result};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Parse `.cubecli.meta` text, running any pending schema migrations first.
 ///
@@ -42,10 +42,16 @@ pub type MigrationFn = fn(&mut toml::Value) -> Result<()>;
 
 /// `MIGRATIONS[v]` upgrades schema v → v+1, so a v3 binary can still read a
 /// v1 file even after the old struct shapes are gone.
-pub const MIGRATIONS: &[MigrationFn] = &[migrate_v0_to_v1];
+pub const MIGRATIONS: &[MigrationFn] = &[migrate_v0_to_v1, migrate_v1_to_v2];
 
 /// v0 files (pre-release, no schema_version field) predate every section
 /// default — the serde defaults fill in all gaps.
 fn migrate_v0_to_v1(_value: &mut toml::Value) -> Result<()> {
+    Ok(())
+}
+
+/// v2 added `runtime.max_heap` — `#[serde(default)]` fills it in, so the
+/// migration itself is a no-op.
+fn migrate_v1_to_v2(_value: &mut toml::Value) -> Result<()> {
     Ok(())
 }

@@ -37,7 +37,8 @@ cubecli project stop
 | `cubecli project op add\|remove\|list` | operators, same live/file split |
 | `cubecli project saves backup\|list\|restore [id]` | zipped world backups with RCON save-flush, TUI restore picker, safety backup before restore |
 | `cubecli project upgrade [--mc-version=X]` | core/loader upgrades |
-| `cubecli project compose` | export a validated `compose.yaml` |
+| `cubecli project compose` | export a `compose.yaml` (validated with `docker compose config` when docker is available) |
+| `cubecli doctor` | environment checkup: docker, WSL, JDKs, daemon, current project — each with a fix-it hint |
 | `cubecli setup java list\|install <feature>` | JDK management (owned `~/.cubecli/jdks` → sdkman → system) |
 | `cubecli setup curseforge [key]` | store the CurseForge API key |
 | `cubecli daemon install\|status\|uninstall` | launchd/systemd user service |
@@ -57,7 +58,7 @@ Five-crate workspace:
   v1 (key + categories cache), Adoptium JDKs.
 - **cubecli-runtime** — native process manager (setsid + pidfile + RCON),
   hand-rolled Source RCON client, docker compose backend, launchd/systemd
-  service install.
+  service install, host probes (WSL, systemd, docker).
 - **cubecli-tui** — ratatui create wizard, restore picker, and addon
   search/install screen.
 - **cubecli** — the binary that wires it all together.

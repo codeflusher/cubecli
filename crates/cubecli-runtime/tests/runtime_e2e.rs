@@ -224,8 +224,23 @@ fn compose_render_covers_launch_shapes_and_policies() {
     assert!(yaml.contains("/srv/mc:/data"));
     assert!(yaml.contains("java -Xmx4G -jar paper.jar nogui"));
     assert!(yaml.contains("25500:25500"));
-    assert!(yaml.contains("127.0.0.1:25599:25575"));
+    // host and container RCON ports are the same — the in-container server
+    // listens on the port written into the bind-mounted server.properties
+    assert!(yaml.contains("127.0.0.1:25599:25599"));
+    assert!(!yaml.contains("25599:25575"), "no hardcoded container port");
     assert!(yaml.contains("restart: unless-stopped"));
+    // freshness signature stamped on the first line
+    let sig = cubecli_runtime::compose::on_disk_sig(&yaml).expect("render stamps a signature");
+    assert_eq!(sig.len(), 16, "sig is a 16-hex-char fingerprint");
+
+    // explicit max-heap overrides the provider-authored -Xmx
+    meta.runtime.max_heap = Some("2G".into());
+    let yaml = cubecli_runtime::compose::render(&meta, &root).unwrap();
+    assert!(
+        yaml.contains("command: \"java -Xmx2G -jar paper.jar nogui\""),
+        "explicit max-heap replaces provider -Xmx: {yaml}"
+    );
+    meta.runtime.max_heap = None;
 
     // argfile launch
     meta.server.launch = Some(LaunchSpec::ArgFile {
@@ -249,6 +264,122 @@ fn compose_render_covers_launch_shapes_and_policies() {
     // unprovisioned → error
     meta.server.launch = None;
     assert!(cubecli_runtime::compose::render(&meta, &root).is_err());
+
+    // Windows-provisioned launch specs map to the unix pair for the linux
+    // container (the installers emit both variants on every host)
+    meta.server.launch = Some(LaunchSpec::Script {
+        script: "run.bat".into(),
+        args: vec!["nogui".into()],
+    });
+    let yaml = cubecli_runtime::compose::render(&meta, &root).unwrap();
+    assert!(yaml.contains("sh run.sh nogui"), "bat→sh for the container: {yaml}");
+    meta.server.launch = Some(LaunchSpec::ArgFile {
+        user_jvm_args: "user_jvm_args.txt".into(),
+        argfile: "libraries/x/windows_args.txt".into(),
+        args: vec![],
+    });
+    let yaml = cubecli_runtime::compose::render(&meta, &root).unwrap();
+    assert!(
+        yaml.contains("@libraries/x/unix_args.txt"),
+        "windows_args→unix_args for the container: {yaml}"
+    );
+}
+
+#[test]
+fn ps_status_maps_exit_codes_to_crash_evidence() {
+    use cubecli_core::traits::runtime::RuntimeStatus;
+    use cubecli_runtime::compose::status_from_ps;
+
+    // no containers → stopped clean (never started)
+    assert_eq!(
+        status_from_ps("[]"),
+        RuntimeStatus::Stopped { clean: true }
+    );
+    assert_eq!(status_from_ps(""), RuntimeStatus::Stopped { clean: true });
+
+    // running → Running with the latest started_at, no pid (containers have none)
+    let running = status_from_ps(
+        r#"[{"State":"running","ExitCode":0,"StartedAt":"2026-01-02T03:04:05.000000000Z"}]"#,
+    );
+    assert!(matches!(running, RuntimeStatus::Running { pid: None, .. }));
+
+    // exited 0 → stopped clean (a deliberate stop or clean shutdown)
+    assert_eq!(
+        status_from_ps(r#"[{"State":"exited","ExitCode":0}]"#),
+        RuntimeStatus::Stopped { clean: true }
+    );
+
+    // exited non-zero → CRASH — this is the daemon's crash evidence
+    assert_eq!(
+        status_from_ps(r#"[{"State":"exited","ExitCode":137}]"#),
+        RuntimeStatus::Stopped { clean: false }
+    );
+
+    // dead → crash regardless of exit code
+    assert_eq!(
+        status_from_ps(r#"[{"State":"dead","ExitCode":0}]"#),
+        RuntimeStatus::Stopped { clean: false }
+    );
+
+    // paused is still up (not crash evidence); running wins over exited
+    assert!(matches!(
+        status_from_ps(r#"[{"State":"paused","ExitCode":0}]"#),
+        RuntimeStatus::Running { .. }
+    ));
+    assert!(matches!(
+        status_from_ps(
+            r#"[{"State":"exited","ExitCode":1},{"State":"running","ExitCode":0}]"#
+        ),
+        RuntimeStatus::Running { .. }
+    ));
+
+    // NDJSON shape (newer compose versions emit one object per line)
+    let ndjson = concat!(
+        r#"{"State":"exited","ExitCode":1}"#,
+        "\n",
+        r#"{"State":"running","ExitCode":0}"#,
+    );
+    assert!(matches!(
+        status_from_ps(ndjson),
+        RuntimeStatus::Running { .. }
+    ));
+}
+
+#[test]
+fn ensure_fresh_regenerates_drift_and_keeps_manual_edits() {
+    use cubecli_core::project::ProjectHandle;
+    use cubecli_runtime::compose::{ensure_fresh, is_hand_edited, Freshness};
+
+    let (tmp, layout, mut meta) = layout_meta();
+    meta.runtime.backend = Backend::Compose;
+    meta.save(layout.meta_file()).unwrap();
+    let handle = ProjectHandle::open(layout.clone()).unwrap();
+
+    // missing → written
+    assert_eq!(ensure_fresh(&handle).unwrap(), Freshness::Written);
+    let path = layout.root().join(cubecli_runtime::compose::COMPOSE_FILE);
+    let original = std::fs::read_to_string(&path).unwrap();
+
+    // unchanged metadata → current, file untouched
+    assert_eq!(ensure_fresh(&handle).unwrap(), Freshness::Current);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+    // metadata drift (port change) → regenerated with a new signature
+    meta.runtime.port = 25501;
+    meta.save(layout.meta_file()).unwrap();
+    let handle = ProjectHandle::open(layout.clone()).unwrap();
+    assert_eq!(ensure_fresh(&handle).unwrap(), Freshness::Regenerated);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("25501:25501"));
+    assert!(!is_hand_edited(&handle));
+
+    // signature line stripped (hand edit) → kept as-is
+    let text = std::fs::read_to_string(&path).unwrap();
+    let body: String = text.lines().skip(1).collect::<Vec<_>>().join("\n") + "\n";
+    std::fs::write(&path, &body).unwrap();
+    assert_eq!(ensure_fresh(&handle).unwrap(), Freshness::KeptManual);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    assert!(is_hand_edited(&handle));
+    let _ = tmp;
 }
 
 #[test]
@@ -258,17 +389,33 @@ fn service_renderers_are_loadable_definitions() {
         log_out: PathBuf::from("/tmp/out.log"),
         log_err: PathBuf::from("/tmp/err.log"),
     };
-    let plist = cubecli_runtime::service::launchd::render(&spec);
-    assert!(plist.contains("dev.cubecli.daemon"));
-    assert!(plist.contains("/usr/local/bin/cubecli"));
-    assert!(plist.contains("<string>daemon</string>"));
-    assert!(plist.contains("RunAtLoad"));
-    assert!(plist.contains("KeepAlive"));
-
-    let unit = cubecli_runtime::service::systemd::render(&spec);
-    assert!(unit.contains("ExecStart=/usr/local/bin/cubecli daemon run"));
-    assert!(unit.contains("Restart=on-failure"));
-    assert!(unit.contains("WantedBy=default.target"));
+    #[cfg(target_os = "macos")]
+    {
+        let plist = cubecli_runtime::service::launchd::render(&spec);
+        assert!(plist.contains("dev.cubecli.daemon"));
+        assert!(plist.contains("/usr/local/bin/cubecli"));
+        assert!(plist.contains("<string>daemon</string>"));
+        assert!(plist.contains("RunAtLoad"));
+        assert!(plist.contains("KeepAlive"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let unit = cubecli_runtime::service::systemd::render(&spec);
+        assert!(unit.contains("ExecStart=/usr/local/bin/cubecli daemon run"));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("WantedBy=default.target"));
+    }
+    // detect() must name the platform's real mechanism (or "unsupported")
+    assert_eq!(
+        cubecli_runtime::service::detect(),
+        if cfg!(target_os = "macos") {
+            "launchd"
+        } else if cfg!(target_os = "linux") {
+            "systemd"
+        } else {
+            "unsupported"
+        }
+    );
 }
 
 #[tokio::test]

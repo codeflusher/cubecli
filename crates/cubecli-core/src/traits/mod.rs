@@ -8,7 +8,10 @@ pub mod progress;
 pub mod runtime;
 pub mod server_core;
 
-pub use addon_source::{AddonFileEntry, AddonProject, AddonQuery, AddonSource, DownloadedAddon};
+pub use addon_source::{
+    AddonFileEntry, AddonProject, AddonQuery, AddonSource, DownloadedAddon, IdentifiedFile,
+    ServerSide,
+};
 pub use java::{JavaInstall, JavaLocator, JavaOrigin, JavaProvisioner};
 pub use progress::{NoopProgress, ProgressReporter, TracingProgress};
 pub use runtime::{RuntimeBackend, RuntimeId, RuntimeStatus, StopGrace, StopOutcome, StopStage};

@@ -3,6 +3,7 @@
 //! implementations (native process manager, docker compose).
 
 pub mod compose;
+pub mod env;
 pub mod error;
 pub mod native;
 pub mod rcon;

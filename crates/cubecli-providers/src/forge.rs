@@ -167,6 +167,9 @@ impl ServerCoreProvider for ForgeProvider {
         ))
         .map_err(|e| ProviderError::Other(format!("bad forge url: {e}")))?;
         let java = self.mojang.java_requirement(mc_version).await?;
+        // The Forge installer emits run.sh + run.bat on every host — pick
+        // the host's pair (the compose backend maps back for the container).
+        let script: &str = if cfg!(windows) { "run.bat" } else { "run.sh" };
 
         Ok(InstallPlan {
             java: JavaRequirement { major: java },
@@ -186,7 +189,7 @@ impl ServerCoreProvider for ForgeProvider {
                     ],
                     needs_java: true,
                     timeout: Duration::from_secs(15 * 60),
-                    expect_paths: vec!["run.sh".into()],
+                    expect_paths: vec![script.into()],
                 },
                 PostInstallStep::WriteTextFile {
                     path: "user_jvm_args.txt".into(),
@@ -194,7 +197,7 @@ impl ServerCoreProvider for ForgeProvider {
                 },
             ],
             launch: LaunchSpec::Script {
-                script: "run.sh".into(),
+                script: script.into(),
                 args: vec!["nogui".into()],
             },
         })

@@ -178,11 +178,13 @@ async fn run_command_step(
         .stderr(std::process::Stdio::piped());
     // Installer scripts sometimes call plain `java` themselves.
     if let Some(java_home) = java.home.parent() {
-        let mut path = std::env::var_os("PATH").unwrap_or_default();
-        let mut with_java = std::ffi::OsString::from(java.home.join("bin"));
-        with_java.push(":");
-        with_java.push(&path);
-        path = with_java;
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            [java.home.join("bin")]
+                .into_iter()
+                .chain(std::env::split_paths(&inherited)),
+        )
+        .unwrap_or(inherited);
         let _ = java_home;
         cmd.env("PATH", path);
     }

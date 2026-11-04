@@ -90,6 +90,15 @@ pub async fn create(
         .clone()
         .into_project_meta()
         .map_err(UserError::from)?;
+    // A global default backend (`~/.cubecli/config.toml`) seeds new
+    // projects; per-project config still wins afterwards.
+    if ctx.config.default_backend != cubecli_core::model::Backend::Native {
+        meta.runtime.backend = ctx.config.default_backend;
+        println!(
+            "  backend: {} (default from ~/.cubecli/config.toml — needs Docker)",
+            meta.runtime.backend.slug()
+        );
+    }
 
     // Persist the project skeleton first so metadata survives even if the
     // core download fails midway (re-running create is refused; use start).

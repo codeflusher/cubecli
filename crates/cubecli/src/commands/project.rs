@@ -10,9 +10,7 @@ use cubecli_core::meta::ProjectMeta;
 use cubecli_core::meta::config_keys;
 use cubecli_core::model::{Backend, CoreBuild};
 use cubecli_core::pipeline::{self, ProvisionOptions};
-use cubecli_core::traits::runtime::{
-    RuntimeBackend, RuntimeStatus, StopGrace, StopOutcome, StopStage,
-};
+use cubecli_core::traits::runtime::{RuntimeBackend, RuntimeStatus, StopGrace, StopStage};
 use cubecli_runtime::{ComposeBackend, NativeBackend};
 
 use crate::cli::PlayerListCommand;
@@ -92,33 +90,29 @@ pub async fn start(ctx: &AppContext) -> Result<(), UserError> {
         }
         _ => println!("server did not report running — check `cubecli project logs`"),
     }
+    if handle.meta().runtime.backend == Backend::Compose
+        && cubecli_runtime::compose::is_hand_edited(&handle)
+    {
+        println!("note: hand-edited compose.yaml kept — `cubecli project compose` regenerates it");
+    }
     Ok(())
 }
 
-pub async fn stop(_ctx: &AppContext) -> Result<(), UserError> {
+pub async fn stop(ctx: &AppContext) -> Result<(), UserError> {
     let handle = discover()?;
-    let outcome: StopOutcome = match handle.meta().runtime.backend {
-        Backend::Compose => ComposeBackend
-            .stop(&handle, StopGrace::default())
-            .await
-            .map_err(UserError::from)?,
-        Backend::Native => {
-            let native = NativeBackend::new(Arc::new(cubecli_core::FsJavaLocator::new(
-                cubecli_core::GlobalLayout::discover()?.jdks_dir(),
-            )));
-            native
-                .stop(&handle, StopGrace::default())
-                .await
-                .map_err(UserError::from)?
-        }
-    };
+    let outcome = backend(ctx, &handle)
+        .stop(&handle, StopGrace::default())
+        .await
+        .map_err(UserError::from)?;
     match outcome.stage {
         StopStage::AlreadyStopped => println!("server is not running"),
         StopStage::Rcon => println!(
             "stopped cleanly via RCON ({:.1}s)",
             outcome.waited.as_secs_f32()
         ),
-        StopStage::Signal => println!("stopped via SIGTERM after RCON grace"),
+        // Native: SIGTERM to the process group. Compose: SIGTERM to the
+        // container's main process (the JVM's shutdown hooks save the world).
+        StopStage::Signal => println!("stopped via SIGTERM ({:.1}s)", outcome.waited.as_secs_f32()),
         StopStage::Kill => println!("server killed (SIGKILL) — the world was NOT saved cleanly"),
     }
     Ok(())
@@ -140,10 +134,16 @@ pub async fn restart(ctx: &AppContext) -> Result<(), UserError> {
 pub async fn status(ctx: &AppContext) -> Result<(), UserError> {
     let handle = discover()?;
     let meta = handle.meta();
-    let runtime = backend(ctx, &handle)
-        .status(&handle)
-        .await
-        .map_err(UserError::from)?;
+    // Any status failure (docker unavailable, …) degrades to an unknown
+    // state instead of aborting the whole table — the error text carries
+    // the actionable detail.
+    let runtime = match backend(ctx, &handle).status(&handle).await {
+        Ok(status) => status,
+        Err(e) => {
+            println!("state unknown — {e}");
+            RuntimeStatus::Unknown
+        }
+    };
 
     let state = match &runtime {
         RuntimeStatus::Running { pid, started_at } => {
@@ -221,21 +221,8 @@ pub async fn logs(ctx: &AppContext, follow: bool, lines: usize) -> Result<(), Us
             println!("{line}");
         }
     } else {
-        match handle.meta().runtime.backend {
-            Backend::Native => {
-                let tail =
-                    cubecli_runtime::native::tail::last_lines(&handle.layout().server_log(), lines)
-                        .map_err(UserError::from)?;
-                for line in tail {
-                    println!("{line}");
-                }
-            }
-            Backend::Compose => {
-                let out = ComposeBackend::logs_tail(&handle, lines)
-                    .await
-                    .map_err(UserError::from)?;
-                print!("{out}");
-            }
+        for line in b.read_logs(&handle, lines).await.map_err(UserError::from)? {
+            println!("{line}");
         }
     }
     Ok(())
@@ -277,6 +264,13 @@ pub async fn compose_export() -> Result<(), UserError> {
     let handle = discover()?;
     let path = cubecli_runtime::compose::export(&handle).map_err(UserError::from)?;
     println!("wrote {}", path.display());
+    match ComposeBackend::validate(&handle).await {
+        Ok(()) => println!("validated with `docker compose config`"),
+        Err(cubecli_runtime::RuntimeError::Docker { message, .. }) => {
+            println!("skipped validation — docker is unavailable: {message}");
+        }
+        Err(e) => return Err(UserError::from(e)),
+    }
     println!(
         "switch to it with `cubecli project config backend=compose`, then `cubecli project start` runs docker compose"
     );
@@ -913,6 +907,18 @@ fn get(handle: &ProjectHandle, key: &str) -> Result<(), UserError> {
 fn set(handle: &mut ProjectHandle, key: &str, value: &str) -> Result<(), UserError> {
     let warnings = config_keys::set(handle.meta_mut(), key, value).map_err(UserError::from)?;
     handle.save()?;
+
+    // ArgFile launches carry JVM flags in user_jvm_args.txt — keep it in
+    // step with the metadata.
+    if key == "max-heap" {
+        let changed = cubecli_core::managed_files::apply_max_heap(
+            handle.layout(),
+            handle.meta().runtime.max_heap.as_deref(),
+        )?;
+        if changed {
+            println!("  • user_jvm_args.txt updated");
+        }
+    }
 
     // Managed files follow the metadata (idempotent — only changed lines rewrite).
     if matches!(

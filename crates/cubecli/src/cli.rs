@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Check the environment: docker, WSL, java, daemon, current project
+    Doctor,
     /// Create a new server project in an empty directory (TUI wizard)
     Create {
         /// Project directory (defaults to the current directory)

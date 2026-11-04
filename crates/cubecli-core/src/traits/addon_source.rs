@@ -59,6 +59,33 @@ pub struct AddonSearchHit {
     pub downloads: u64,
 }
 
+/// Server-side support as declared by an addon source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerSide {
+    Required,
+    Optional,
+    Unsupported,
+    Unknown,
+}
+
+impl ServerSide {
+    /// Whether the addon can run on a server at all (`--server-only` keeps
+    /// `required`/`optional` and drops `unsupported`; unknown data keeps it too).
+    pub fn runs_on_server(self) -> bool {
+        matches!(self, Self::Required | Self::Optional)
+    }
+}
+
+/// What a source said about a local jar file (see [`AddonSource::identify_file`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentifiedFile {
+    pub project: AddonProject,
+    pub version: String,
+    pub server_side: Option<ServerSide>,
+    /// `None` when the source cannot tell (e.g. CurseForge class reverse lookup).
+    pub kind: Option<AddonKind>,
+}
+
 /// One downloadable file/version of an addon project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddonFileEntry {
@@ -115,4 +142,18 @@ pub trait AddonSource: Send + Sync {
         file: &AddonFileEntry,
         query: &AddonQuery,
     ) -> Result<Vec<AddonProject>>;
+
+    /// Identify a local jar by its content (each source hashes with its own
+    /// algorithm). `Ok(None)` = unrecognized on this source.
+    async fn identify_file(&self, path: &Path) -> Result<Option<IdentifiedFile>> {
+        let _ = path;
+        Ok(None)
+    }
+
+    /// Server-side support declared for a project.
+    /// `Ok(None)` = this source has no such metadata.
+    async fn server_side(&self, project: &AddonProject) -> Result<Option<ServerSide>> {
+        let _ = project;
+        Ok(None)
+    }
 }
