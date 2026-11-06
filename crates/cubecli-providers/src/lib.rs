@@ -14,6 +14,7 @@ pub mod forge;
 pub mod http;
 pub mod modrinth;
 pub mod mojang;
+pub mod murmur2;
 pub mod neoforge;
 pub mod paper;
 pub mod purpur;

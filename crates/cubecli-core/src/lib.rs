@@ -12,6 +12,7 @@ pub mod jvm;
 pub mod managed_files;
 pub mod meta;
 pub mod model;
+pub mod modlist;
 pub mod paths;
 pub mod pipeline;
 pub mod project;

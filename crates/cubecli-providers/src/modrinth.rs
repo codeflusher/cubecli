@@ -15,6 +15,7 @@ use cubecli_core::error::Result;
 use cubecli_core::model::{AddonKind, AddonSourceId, BuildChannel, Checksum};
 use cubecli_core::traits::addon_source::{
     AddonFileEntry, AddonProject, AddonQuery, AddonSearchHit, AddonSource, DownloadedAddon,
+    IdentifiedFile, ServerSide,
 };
 
 use crate::error::{ProviderError, Result as PResult};
@@ -109,6 +110,59 @@ impl ModrinthSource {
         }
         Ok(entries)
     }
+
+    /// Identify a local jar by its sha1 against the Modrinth database.
+    /// A hash miss is a plain 404 — mapped to `None`, not an error.
+    pub async fn identify(&self, path: &Path) -> PResult<Option<IdentifiedFile>> {
+        let sha1 = crate::checksum::digest_file("sha1", path)?;
+        let url = format!(
+            "{}/version_file/{}?algorithm=sha1",
+            self.base,
+            http::encode_segment(&sha1)
+        );
+        let Some(version) = get_json_allow_404(&self.client, &url).await? else {
+            return Ok(None);
+        };
+        let Some(project_id) = version.get("project_id").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let project_json = self.project_json(project_id).await?;
+        Ok(Some(IdentifiedFile {
+            project: Self::parse_project(project_id, &project_json)?,
+            version: version
+                .get("version_number")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            server_side: Some(parse_server_side(&project_json)),
+            kind: project_json
+                .get("project_type")
+                .and_then(Value::as_str)
+                .and_then(kind_of_project_type),
+        }))
+    }
+}
+
+/// GET JSON where 404 means "no data" rather than a failure (hash lookups).
+async fn get_json_allow_404(client: &reqwest::Client, url: &str) -> PResult<Option<Value>> {
+    let response = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| ProviderError::Http(e.to_string()))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ProviderError::Http(format!("GET {url} returned {status}")));
+    }
+    response
+        .json::<Value>()
+        .await
+        .map(Some)
+        .map_err(|e| ProviderError::Other(format!("invalid JSON from {url}: {e}")))
 }
 
 /// `"[\"fabric\",\"paper\"]"` → `loaders=%5B%22fabric%22%2C%22paper%22%5D` style.
@@ -297,6 +351,20 @@ impl AddonSource for ModrinthSource {
         }
         Ok(deps)
     }
+
+    async fn identify_file(&self, path: &Path) -> Result<Option<IdentifiedFile>> {
+        self.identify(path).await.map_err(Into::into)
+    }
+
+    async fn server_side(&self, project: &AddonProject) -> Result<Option<ServerSide>> {
+        let key = if project.provider_id.is_empty() {
+            project.slug.as_str()
+        } else {
+            project.provider_id.as_str()
+        };
+        let json = self.project_json(key).await?;
+        Ok(Some(parse_server_side(&json)))
+    }
 }
 
 /// Modrinth `project_type` for our addon kind.
@@ -306,6 +374,23 @@ pub fn project_type(kind: AddonKind) -> &'static str {
         AddonKind::Plugin => "plugin",
         AddonKind::Datapack => "datapack",
         AddonKind::ServerResourcePack => "resourcepack",
+    }
+}
+
+/// Inverse of [`project_type`] — identifies what a resolved project is.
+pub fn kind_of_project_type(project_type_str: &str) -> Option<AddonKind> {
+    AddonKind::ALL
+        .into_iter()
+        .find(|k| project_type(*k) == project_type_str)
+}
+
+/// The project's declared server-side support (`server_side` field).
+pub fn parse_server_side(json: &Value) -> ServerSide {
+    match json.get("server_side").and_then(Value::as_str) {
+        Some("required") => ServerSide::Required,
+        Some("optional") => ServerSide::Optional,
+        Some("unsupported") => ServerSide::Unsupported,
+        _ => ServerSide::Unknown,
     }
 }
 

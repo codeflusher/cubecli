@@ -223,8 +223,7 @@ pub fn set(meta: &mut ProjectMeta, key: &str, value: &str) -> Result<Vec<String>
             if value.is_empty() {
                 meta.runtime.max_heap = None;
             } else {
-                crate::jvm::parse_max_heap(value)
-                    .map_err(|e| CoreError::invalid_config(key, e))?;
+                crate::jvm::parse_max_heap(value).map_err(|e| CoreError::invalid_config(key, e))?;
                 meta.runtime.max_heap = Some(value.to_string());
             }
             warnings.push("max-heap changed — restart the server to apply".into());

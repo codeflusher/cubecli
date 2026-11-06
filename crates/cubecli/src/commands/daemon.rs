@@ -333,8 +333,7 @@ pub async fn install() -> Result<(), UserError> {
     };
     // systemd user units need a systemd session — WSL ships without one
     // unless explicitly enabled, and the error must say how to fix that.
-    if cubecli_runtime::service::detect() == "systemd"
-        && !cubecli_runtime::env::systemd_available()
+    if cubecli_runtime::service::detect() == "systemd" && !cubecli_runtime::env::systemd_available()
     {
         return Err(UserError::new("systemd user session is not available").with_hint(
             "inside WSL: add `[boot] systemd=true` to /etc/wsl.conf, then run `wsl --shutdown` from Windows; on Linux: check `systemctl --user` works",

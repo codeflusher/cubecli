@@ -43,12 +43,8 @@ pub fn parse_max_heap(value: &str) -> Result<(), String> {
     if !matches!(unit, 'M' | 'm' | 'G' | 'g') {
         return Err(heap_error(value));
     }
-    let digits = value
-        .chars()
-        .rev()
-        .skip(1)
-        .all(|c| c.is_ascii_digit())
-        && value.chars().count() >= 2;
+    let digits =
+        value.chars().rev().skip(1).all(|c| c.is_ascii_digit()) && value.chars().count() >= 2;
     if digits {
         Ok(())
     } else {
@@ -70,7 +66,10 @@ mod tests {
         assert_eq!(heap_flags(Some("4G")), vec!["-Xmx4G"]);
 
         let provider: Vec<String> = vec!["-Xms1G".into(), "-Xmx4G".into(), "-XX:+UseG1GC".into()];
-        assert_eq!(strip_heap_flags(&provider), vec!["-XX:+UseG1GC".to_string()]);
+        assert_eq!(
+            strip_heap_flags(&provider),
+            vec!["-XX:+UseG1GC".to_string()]
+        );
     }
 
     #[test]

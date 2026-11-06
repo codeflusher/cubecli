@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt as _;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -369,4 +370,185 @@ fn doctor_inside_a_project_includes_project_checks() {
         .assert()
         .stdout(contains("project/eula"))
         .stdout(contains("NOT accepted"));
+}
+
+// ------------------------------------------------------------------------------------------------
+// modlist export/import
+
+/// Seed installed addon records into a project's `.cubecli.meta` by
+/// replacing the empty `installed = []` placeholder with `[[addons.installed]]`
+/// tables (re-defining the key would make the TOML invalid).
+fn install_addons_in_meta(project: &Path, toml_records: &str) {
+    let meta_path = project.join(".cubecli.meta");
+    let meta = std::fs::read_to_string(&meta_path).unwrap();
+    let updated = meta.replacen("installed = []", toml_records, 1);
+    assert_ne!(
+        updated, meta,
+        "meta has no `installed = []` placeholder to replace"
+    );
+    std::fs::write(meta_path, updated).unwrap();
+}
+
+const TWO_MODS_ONE_PLUGIN: &str = r#"
+[[addons.installed]]
+slug = "sodium"
+source_id = "modrinth"
+provider_id = "AANobbMI"
+kind = "mod"
+version = "0.6.5"
+file = "sodium-0.6.5.jar"
+dir = "mods"
+installed_at = "2026-01-01T00:00:00Z"
+
+[[addons.installed]]
+slug = "fabric-api"
+source_id = "modrinth"
+provider_id = "P7dR8mSH"
+kind = "mod"
+version = "0.100.0"
+file = "fabric-api.jar"
+dir = "mods"
+installed_at = "2026-01-01T00:00:00Z"
+
+[[addons.installed]]
+slug = "essentialsx"
+source_id = "modrinth"
+provider_id = "gid"
+kind = "plugin"
+version = "2.20"
+file = "essentialsx.jar"
+dir = "plugins"
+installed_at = "2026-01-01T00:00:00Z"
+"#;
+
+#[test]
+fn tools_help_lists_export_modlist() {
+    let (mut cmd, _env) = cli();
+    cmd.args(["tools", "export-modlist", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("mod jars"))
+        .stdout(contains("--server-only"))
+        .stdout(contains("--mod-source"));
+}
+
+#[test]
+fn tools_export_modlist_fails_in_a_dir_without_jars() {
+    let (mut cmd, _env) = cli();
+    cmd.args(["tools", "export-modlist"])
+        .assert()
+        .failure()
+        .stderr(contains("no .jar files"));
+}
+
+#[test]
+fn project_export_modlist_reads_meta_offline() {
+    let (mut cmd, env) = cli();
+    let project = create_project(&env, "server");
+    install_addons_in_meta(&project, TWO_MODS_ONE_PLUGIN);
+
+    cmd.current_dir(&project)
+        .args(["project", "export-modlist"])
+        .assert()
+        .success()
+        .stdout(contains("# cubecli modlist v1"))
+        .stdout(contains("# source: modrinth"))
+        .stdout(contains("mod:fabric-api@0.100.0"))
+        .stdout(contains("mod:sodium@0.6.5"))
+        .stdout(contains("# not found:").not())
+        // entries sorted, plugins never leak into a modlist
+        .stdout(contains("essentialsx").not());
+}
+
+#[test]
+fn project_export_modlist_base64_writes_decodable_file() {
+    let (mut cmd, env) = cli();
+    let project = create_project(&env, "server");
+    install_addons_in_meta(&project, TWO_MODS_ONE_PLUGIN);
+    let out = project.join("mods.b64");
+
+    cmd.current_dir(&project)
+        .args(["project", "export-modlist", "--base64", "-o"])
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(contains("wrote"));
+
+    let encoded = std::fs::read_to_string(&out).unwrap();
+    assert!(!encoded.contains('\n'), "base64 output is a single line");
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim()).unwrap();
+    let text = String::from_utf8(decoded).unwrap();
+    assert!(text.contains("mod:sodium@0.6.5"));
+    assert!(text.contains("# source: modrinth"));
+}
+
+#[test]
+fn project_export_modlist_outside_project_fails() {
+    let (mut cmd, env) = cli();
+    cmd.current_dir(env.cwd.path())
+        .args(["project", "export-modlist"])
+        .assert()
+        .failure()
+        .stderr(contains("not a cubecli project"));
+}
+
+#[test]
+fn project_import_modlist_rejects_bad_input() {
+    // One isolated HOME for all cases; a fresh command per invocation
+    // (assert_cmd accumulates args across `args()` calls).
+    let (_, env) = cli();
+    let project = create_project(&env, "server");
+    let mut run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("cubecli").unwrap();
+        command
+            .env("HOME", &env.home)
+            .env("CUBECLI_NO_DOWNLOAD", "1")
+            .current_dir(&project)
+            .args(args)
+            .assert()
+    };
+
+    // no input at all
+    run(&["project", "import-modlist"])
+        .failure()
+        .stderr(contains("no modlist input"));
+
+    // malformed entry line (names the offending line)
+    run(&["project", "import-modlist", "mod:ok\ngarbage-line"])
+        .failure()
+        .stderr(contains("not a modlist entry"));
+
+    // invalid base64
+    run(&["project", "import-modlist", "--base64", "!!!not-base64!!!"])
+        .failure()
+        .stderr(contains("invalid base64"));
+
+    // -i pointing at a missing file
+    run(&["project", "import-modlist", "-i", "does-not-exist.modlist"])
+        .failure()
+        .stderr(contains("does-not-exist.modlist"));
+
+    // a modlist with no entries
+    run(&["project", "import-modlist", "# only comments\n"])
+        .failure()
+        .stderr(contains("contains no mods"));
+}
+
+#[test]
+fn project_import_modlist_incompatible_core_reports_not_found_offline() {
+    // `create --yes` defaults to paper, which loads no mods — every entry
+    // fails the compat check before any network call, so this is fully
+    // offline-deterministic.
+    let (mut cmd, env) = cli();
+    let project = create_project(&env, "server");
+
+    cmd.current_dir(&project)
+        .args(["project", "import-modlist", "mod:sodium@1.2.3"])
+        .assert()
+        .failure()
+        .stdout(contains("importing 1 mod(s)"))
+        .stdout(contains("imported 0 of 1 mods"))
+        .stdout(contains("not found (1)"))
+        .stdout(contains("warning: 1 mod(s) could not be imported"));
 }

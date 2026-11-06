@@ -7,7 +7,7 @@ pub mod context;
 pub mod exit;
 pub mod output;
 
-use cli::{Command, DaemonCommand, ProjectCommand, SavesCommand, SetupCommand};
+use cli::{Command, DaemonCommand, ProjectCommand, SavesCommand, SetupCommand, ToolsCommand};
 
 /// Run one command, returning the process exit code.
 pub async fn run(cli: cli::Cli) -> i32 {
@@ -45,6 +45,18 @@ async fn dispatch(command: Command) -> CmdResult {
             DaemonCommand::Run { interval } => commands::daemon::run(interval).await,
         },
         Command::Project { command } => project(command).await,
+        Command::Tools { command } => tools(command).await,
+    }
+}
+
+async fn tools(command: ToolsCommand) -> CmdResult {
+    match command {
+        ToolsCommand::ExportModlist {
+            base64,
+            output,
+            server_only,
+            mod_source,
+        } => commands::tools::export_modlist(base64, output, server_only, mod_source).await,
     }
 }
 
@@ -71,5 +83,16 @@ async fn project(command: ProjectCommand) -> CmdResult {
             SavesCommand::Restore { id, yes } => commands::saves::restore(&ctx, id, yes).await,
         },
         Compose => commands::project::compose_export().await,
+        ExportModlist {
+            base64,
+            output,
+            server_only,
+            mod_source,
+        } => commands::project::export_modlist(&ctx, base64, output, server_only, mod_source).await,
+        ImportModlist {
+            input,
+            input_file,
+            base64,
+        } => commands::project::import_modlist(&ctx, input, input_file, base64).await,
     }
 }

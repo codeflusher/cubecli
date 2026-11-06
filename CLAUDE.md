@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-cubecli — a Rust CLI that creates, configures, runs, and maintains Minecraft servers. macOS (primary) + Linux; edition 2024; toolchain pinned to 1.88.0 via `rust-toolchain.toml`.
+cubecli — a Rust CLI that creates, configures, runs, and maintains Minecraft servers. macOS (primary) + Linux + Windows (new); edition 2024; toolchain pinned to 1.88.0 via `rust-toolchain.toml`. Cross-check platform-gated code with `cargo check -p cubecli-core -p cubecli-runtime -p cubecli-tui --target x86_64-pc-windows-msvc` (the bin/providers targets need a real Windows host — aws-lc-sys can't cross-compile its C from macOS).
 
 ## Commands
 
@@ -34,7 +34,7 @@ cubecli (bin, composition root) ──> providers ──┐
 
 - **cubecli-core** — pure domain, no HTTP/sockets/process spawning. Holds `.cubecli.meta` model + schema migrations, typed config keys, `server.properties` editor, schedule engine (cron + `Nd/Kh/Mm/Ts` durations), backup engine, the daemon decision function, and **every cross-crate trait** in `traits/` (`ServerCoreProvider`, `AddonSource`, `RuntimeBackend`, `JavaLocator`, `JavaProvisioner`, `ProgressReporter`). If you need a new seam between crates, the trait goes here.
 - **cubecli-providers** — all outbound HTTP: Mojang piston-meta, PaperMC Fill v3, Purpur, Fabric, NeoForge, Forge, Modrinth v2, CurseForge v1, Adoptium JDKs. Mock-tested with wiremock.
-- **cubecli-runtime** — process control: native backend (setsid + pidfile + hand-rolled Source RCON client), docker compose backend, launchd/systemd service install.
+- **cubecli-runtime** — process control: native backend (setsid + pidfile + hand-rolled Source RCON client), docker compose backend, launchd/systemd/schtasks service install, host probes (WSL, systemd, docker).
 - **cubecli-tui** — ratatui screens (create wizard, backup-restore picker, addon search/install). Step-based, tested against ratatui `TestBackend`.
 - **cubecli** — the binary: clap CLI (`cli.rs`), command implementations (`commands/`), and `context.rs`, the **composition root** (`AppContext` wires concrete implementations into core traits). The daemon's tick loop also lives here.
 

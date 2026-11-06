@@ -1,5 +1,6 @@
 //! `cubecli project …` handlers: config, lifecycle, logs, console, compose.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use comfy_table::Table;
@@ -8,7 +9,7 @@ use cubecli_core::ProjectHandle;
 use cubecli_core::backup;
 use cubecli_core::meta::ProjectMeta;
 use cubecli_core::meta::config_keys;
-use cubecli_core::model::{Backend, CoreBuild};
+use cubecli_core::model::{AddonSourceId, Backend, CoreBuild};
 use cubecli_core::pipeline::{self, ProvisionOptions};
 use cubecli_core::traits::runtime::{RuntimeBackend, RuntimeStatus, StopGrace, StopStage};
 use cubecli_runtime::{ComposeBackend, NativeBackend};
@@ -274,6 +275,212 @@ pub async fn compose_export() -> Result<(), UserError> {
     println!(
         "switch to it with `cubecli project config backend=compose`, then `cubecli project start` runs docker compose"
     );
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------
+// modlist export/import
+
+/// Wires the CLI's addon registry into the export pipeline's source lookup.
+struct RegistryLookup<'a>(&'a AppContext);
+
+impl cubecli_core::pipeline::modlist::SourceLookup for RegistryLookup<'_> {
+    fn lookup(
+        &self,
+        id: cubecli_core::model::AddonSourceId,
+    ) -> cubecli_core::Result<std::sync::Arc<dyn cubecli_core::traits::addon_source::AddonSource>>
+    {
+        self.0.addons.get(id)
+    }
+}
+
+/// `--mod-source` for project export: `None` = use each record's own source.
+fn parse_mod_source_option(value: Option<&str>) -> Result<Option<AddonSourceId>, UserError> {
+    match value {
+        None => Ok(None),
+        Some(name) => AddonSourceId::parse(name).map(Some).ok_or_else(|| {
+            UserError::new(format!("unknown source `{name}`"))
+                .with_hint("one of: modrinth, curseforge")
+        }),
+    }
+}
+
+/// `cubecli project export-modlist` — the installed mods as a portable
+/// modlist. Offline unless `--server-only` asks the sources for metadata.
+pub async fn export_modlist(
+    ctx: &AppContext,
+    base64: bool,
+    output: Option<PathBuf>,
+    server_only: bool,
+    mod_source: Option<String>,
+) -> Result<(), UserError> {
+    let handle = discover()?;
+    let check_override = parse_mod_source_option(mod_source.as_deref())?;
+    let export = cubecli_core::pipeline::modlist::export_from_project(
+        handle.meta(),
+        &RegistryLookup(ctx),
+        server_only,
+        check_override,
+    )
+    .await
+    .map_err(UserError::from)?;
+    if export.entries.is_empty() {
+        println!("no mods installed — try `cubecli project install mod:sodium`");
+        return Ok(());
+    }
+
+    // Header source: the explicit override wins; otherwise the single source
+    // all records agree on (mixed records omit the line).
+    let header_source = check_override.or_else(|| {
+        if export.distinct_sources.len() == 1 {
+            Some(export.distinct_sources[0])
+        } else {
+            None
+        }
+    });
+    let mut doc = cubecli_core::modlist::ModlistDocument {
+        source: header_source,
+        notes: Vec::new(),
+        entries: export.entries,
+        not_found: Vec::new(),
+    };
+    if !export.excluded.is_empty() {
+        doc.notes.push(format!(
+            "excluded (client-only): {}",
+            export
+                .excluded
+                .iter()
+                .map(|(slug, _)| slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let channel = if output.is_some() {
+        crate::commands::tools::ReportChannel::Stdout
+    } else {
+        crate::commands::tools::ReportChannel::Stderr
+    };
+    for slug in &export.metadata_unknown {
+        channel.line(&format!(
+            "  • could not check server-side support for `{slug}` — kept"
+        ));
+    }
+    crate::commands::tools::emit_modlist(&doc, base64, &output, &channel)
+}
+
+/// `cubecli project import-modlist` — parse a modlist (inline text, a file
+/// with `-i`, base64 with `--base64`) and install every entry through the
+/// normal install pipeline. Failures are collected into a not-found warning
+/// block; the command only errors out when nothing could be imported at all.
+pub async fn import_modlist(
+    ctx: &AppContext,
+    input: Option<String>,
+    input_file: bool,
+    base64: bool,
+) -> Result<(), UserError> {
+    let mut handle = discover()?;
+    let raw = match (&input, input_file) {
+        (Some(text), false) => text.clone(),
+        (Some(path), true) => std::fs::read_to_string(path).map_err(|e| {
+            UserError::from(cubecli_core::CoreError::io(std::path::Path::new(path), e))
+        })?,
+        (None, _) => {
+            return Err(UserError::new("no modlist input").with_hint(
+                "pass the modlist text (or base64 with --base64), or a file path with -i",
+            ));
+        }
+    };
+    let text = if base64 {
+        cubecli_core::modlist::decode_base64(&raw).map_err(UserError::from)?
+    } else {
+        raw
+    };
+    let doc = cubecli_core::modlist::parse(&text).map_err(UserError::from)?;
+    if doc.entries.is_empty() {
+        return Err(UserError::new("the modlist contains no mods")
+            .with_hint("entries look like `mod:sodium` or `mod:sodium@0.6.5`"));
+    }
+
+    // The modlist header names the source it came from; otherwise the
+    // project's own default applies.
+    let source_id = doc.source.unwrap_or(handle.meta().addons.default_source);
+    crate::commands::tools::require_curseforge_key(ctx, source_id)?;
+    let source = ctx.addons.get(source_id)?;
+
+    println!(
+        "importing {} mod(s) via {} into project `{}`…",
+        doc.entries.len(),
+        source_id.slug(),
+        handle.meta().project.slug
+    );
+    let report = cubecli_core::pipeline::modlist::import_modlist(
+        &mut handle,
+        source.as_ref(),
+        &doc.entries,
+        &|dep| {
+            println!("  • auto-accepted dependency `{}`", dep.slug);
+            true
+        },
+    )
+    .await;
+
+    for record in &report.installed {
+        println!(
+            "installed {} `{}` {} → {}/{}",
+            record.kind.slug(),
+            record.slug,
+            record.version,
+            record.dir,
+            record.file
+        );
+    }
+    for (slug, reason) in &report.skipped {
+        println!("  • skipped `{slug}` ({reason})");
+    }
+    for warning in &report.warnings {
+        println!("  • {warning}");
+    }
+
+    let imported = doc
+        .entries
+        .iter()
+        .filter(|e| {
+            report
+                .installed
+                .iter()
+                .any(|r| r.slug.eq_ignore_ascii_case(&e.slug))
+        })
+        .count();
+    println!(
+        "imported {imported} of {} mods{}",
+        doc.entries.len(),
+        if report.skipped.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} already installed)",
+                report.skipped.len()
+            )
+        }
+    );
+    if !report.not_found.is_empty() {
+        println!("  • not found ({}):", report.not_found.len());
+        for (slug, reason) in &report.not_found {
+            println!("  •   `{slug}` — {reason}");
+        }
+        println!(
+            "warning: {} mod(s) could not be imported — see the list above",
+            report.not_found.len()
+        );
+    }
+
+    if imported == 0 && report.skipped.is_empty() && !report.not_found.is_empty() {
+        let (slug, reason) = &report.not_found[0];
+        return Err(UserError::new(format!(
+            "no mods could be imported — `{slug}`: {reason}"
+        )));
+    }
     Ok(())
 }
 

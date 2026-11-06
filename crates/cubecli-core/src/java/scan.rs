@@ -167,11 +167,7 @@ fn which_java() -> Option<PathBuf> {
 }
 
 fn java_exe() -> &'static str {
-    if cfg!(windows) {
-        "java.exe"
-    } else {
-        "java"
-    }
+    if cfg!(windows) { "java.exe" } else { "java" }
 }
 
 /// `$JAVA_HOME` when it points at a real JDK layout.

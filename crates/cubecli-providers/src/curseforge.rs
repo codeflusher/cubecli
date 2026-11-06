@@ -17,6 +17,7 @@ use cubecli_core::error::Result;
 use cubecli_core::model::{AddonKind, AddonSourceId, BuildChannel, Checksum};
 use cubecli_core::traits::addon_source::{
     AddonFileEntry, AddonProject, AddonQuery, AddonSearchHit, AddonSource, DownloadedAddon,
+    IdentifiedFile, ServerSide,
 };
 
 use crate::cf_categories;
@@ -165,6 +166,82 @@ impl CurseForgeSource {
             .ok_or_else(|| ProviderError::Other("curseforge download-url missing".into()))?;
         Url::parse(raw).map_err(|e| ProviderError::Other(format!("bad CF cdn url: {e}")))
     }
+
+    /// Identify a local jar by its CurseForge murmur2 fingerprint:
+    /// `POST /fingerprints` → mod id → `/mods/{id}` (slug) →
+    /// `/mods/{id}/files/{file}` (client-side flag). An unmatched
+    /// fingerprint is `None`, not an error.
+    pub async fn identify(&self, path: &Path) -> PResult<Option<IdentifiedFile>> {
+        let fingerprint = crate::murmur2::digest_file(path)?;
+        let key = self.api_key()?;
+        let body = serde_json::json!({ "fingerprints": [fingerprint] });
+        let json = post_json_with_key(
+            &self.client,
+            &key,
+            &format!("{}{}", self.base, "/fingerprints"),
+            &body,
+        )
+        .await?;
+        let exact = json
+            .pointer("/data/exactMatches")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Some(matched) = exact.first() else {
+            return Ok(None); // fingerprint not in CurseForge's database
+        };
+        let mod_id = matched
+            .get("id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .to_string();
+        let file_id = matched
+            .pointer("/file/id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+
+        let mod_json = self.get(&format!("/mods/{mod_id}")).await?;
+        let mod_data = mod_json.get("data").cloned().unwrap_or_default();
+        let slug = mod_data
+            .get("slug")
+            .and_then(Value::as_str)
+            .unwrap_or(mod_id.as_str())
+            .to_string();
+        let title = mod_data
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&slug)
+            .to_string();
+
+        // File detail carries the client-side flag (the fingerprint match
+        // response omits it) — the only server-side signal CurseForge has.
+        let file_json = self.get(&format!("/mods/{mod_id}/files/{file_id}")).await?;
+        let client_side_only = file_json
+            .pointer("/data/isClientSideOnly")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let version = file_json
+            .pointer("/data/displayName")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        Ok(Some(IdentifiedFile {
+            project: AddonProject {
+                slug,
+                provider_id: mod_id,
+                title,
+                description: String::new(),
+            },
+            version,
+            server_side: if client_side_only {
+                Some(ServerSide::Unsupported)
+            } else {
+                None
+            },
+            kind: None,
+        }))
+    }
 }
 
 fn parse_hits(json: &Value) -> Vec<AddonSearchHit> {
@@ -230,6 +307,42 @@ pub async fn get_json_with_key(
     }
     if !status.is_success() {
         return Err(ProviderError::Http(format!("GET {url} returned {status}")));
+    }
+    response
+        .json::<Value>()
+        .await
+        .map_err(|e| ProviderError::Other(format!("invalid JSON from {url}: {e}")))
+}
+
+/// POST JSON with the CurseForge key header (the fingerprints endpoint).
+pub async fn post_json_with_key(
+    client: &reqwest::Client,
+    api_key: &str,
+    url: &str,
+    body: &Value,
+) -> PResult<Value> {
+    let response = client
+        .post(url)
+        .header("x-api-key", api_key)
+        .json(body)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| ProviderError::Http(e.to_string()))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(ProviderError::Auth {
+            service: "curseforge",
+        });
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ProviderError::RateLimited {
+            service: "curseforge",
+            retry_after: None,
+        });
+    }
+    if !status.is_success() {
+        return Err(ProviderError::Http(format!("POST {url} returned {status}")));
     }
     response
         .json::<Value>()
@@ -361,6 +474,13 @@ impl AddonSource for CurseForgeSource {
     ) -> Result<Vec<AddonProject>> {
         Ok(vec![])
     }
+
+    async fn identify_file(&self, path: &Path) -> Result<Option<IdentifiedFile>> {
+        self.identify(path).await.map_err(Into::into)
+    }
+
+    // `server_side` keeps the default Ok(None): CurseForge has no
+    // project-level server-side metadata (documented limitation).
 }
 
 /// Stream a CDN download to `dest_dir/<file_name>` (with the key header).

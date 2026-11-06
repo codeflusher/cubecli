@@ -48,6 +48,30 @@ pub enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Utilities that work outside a cubecli project
+    Tools {
+        #[command(subcommand)]
+        command: ToolsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ToolsCommand {
+    /// Export a modlist from the mod jars in the current directory (foreign modpack)
+    ExportModlist {
+        /// Base64-encode the whole modlist (single line)
+        #[arg(long)]
+        base64: bool,
+        /// Write the modlist to this file instead of stdout
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Exclude client-only mods (server-side metadata from the source)
+        #[arg(long)]
+        server_only: bool,
+        /// Addon source to identify jars against (modrinth|curseforge)
+        #[arg(long)]
+        mod_source: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -156,6 +180,32 @@ pub enum ProjectCommand {
     },
     /// Export a docker-compose.yaml for this project
     Compose,
+    /// Export the installed mods as a portable modlist
+    ExportModlist {
+        /// Base64-encode the whole modlist (single line)
+        #[arg(long)]
+        base64: bool,
+        /// Write the modlist to this file instead of stdout
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Exclude client-only mods (checks the addon source per mod)
+        #[arg(long)]
+        server_only: bool,
+        /// Source used for the server-side check (modrinth|curseforge)
+        #[arg(long)]
+        mod_source: Option<String>,
+    },
+    /// Import mods from a modlist (inline text, or a file path with -i)
+    ImportModlist {
+        /// Modlist text, a file path with -i (base64 with --base64)
+        input: Option<String>,
+        /// Treat INPUT as a file path
+        #[arg(short = 'i', long)]
+        input_file: bool,
+        /// Decode INPUT as base64 first
+        #[arg(long)]
+        base64: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

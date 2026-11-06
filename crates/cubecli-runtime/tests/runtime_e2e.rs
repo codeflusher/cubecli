@@ -272,7 +272,10 @@ fn compose_render_covers_launch_shapes_and_policies() {
         args: vec!["nogui".into()],
     });
     let yaml = cubecli_runtime::compose::render(&meta, &root).unwrap();
-    assert!(yaml.contains("sh run.sh nogui"), "bat→sh for the container: {yaml}");
+    assert!(
+        yaml.contains("sh run.sh nogui"),
+        "bat→sh for the container: {yaml}"
+    );
     meta.server.launch = Some(LaunchSpec::ArgFile {
         user_jvm_args: "user_jvm_args.txt".into(),
         argfile: "libraries/x/windows_args.txt".into(),
@@ -291,10 +294,7 @@ fn ps_status_maps_exit_codes_to_crash_evidence() {
     use cubecli_runtime::compose::status_from_ps;
 
     // no containers → stopped clean (never started)
-    assert_eq!(
-        status_from_ps("[]"),
-        RuntimeStatus::Stopped { clean: true }
-    );
+    assert_eq!(status_from_ps("[]"), RuntimeStatus::Stopped { clean: true });
     assert_eq!(status_from_ps(""), RuntimeStatus::Stopped { clean: true });
 
     // running → Running with the latest started_at, no pid (containers have none)
@@ -327,9 +327,7 @@ fn ps_status_maps_exit_codes_to_crash_evidence() {
         RuntimeStatus::Running { .. }
     ));
     assert!(matches!(
-        status_from_ps(
-            r#"[{"State":"exited","ExitCode":1},{"State":"running","ExitCode":0}]"#
-        ),
+        status_from_ps(r#"[{"State":"exited","ExitCode":1},{"State":"running","ExitCode":0}]"#),
         RuntimeStatus::Running { .. }
     ));
 
@@ -348,7 +346,7 @@ fn ps_status_maps_exit_codes_to_crash_evidence() {
 #[test]
 fn ensure_fresh_regenerates_drift_and_keeps_manual_edits() {
     use cubecli_core::project::ProjectHandle;
-    use cubecli_runtime::compose::{ensure_fresh, is_hand_edited, Freshness};
+    use cubecli_runtime::compose::{Freshness, ensure_fresh, is_hand_edited};
 
     let (tmp, layout, mut meta) = layout_meta();
     meta.runtime.backend = Backend::Compose;
@@ -369,7 +367,11 @@ fn ensure_fresh_regenerates_drift_and_keeps_manual_edits() {
     meta.save(layout.meta_file()).unwrap();
     let handle = ProjectHandle::open(layout.clone()).unwrap();
     assert_eq!(ensure_fresh(&handle).unwrap(), Freshness::Regenerated);
-    assert!(std::fs::read_to_string(&path).unwrap().contains("25501:25501"));
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("25501:25501")
+    );
     assert!(!is_hand_edited(&handle));
 
     // signature line stripped (hand edit) → kept as-is

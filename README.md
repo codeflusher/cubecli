@@ -38,6 +38,9 @@ cubecli project stop
 | `cubecli project saves backup\|list\|restore [id]` | zipped world backups with RCON save-flush, TUI restore picker, safety backup before restore |
 | `cubecli project upgrade [--mc-version=X]` | core/loader upgrades |
 | `cubecli project compose` | export a `compose.yaml` (validated with `docker compose config` when docker is available) |
+| `cubecli project export-modlist [--base64] [-o file] [--server-only] [--mod-source src]` | installed mods as a portable `mod:slug[@version]` list (`--server-only` drops client-only mods via source metadata) |
+| `cubecli project import-modlist [--base64] [-i] <input>` | install a modlist (inline text/base64, or a file with `-i`); unresolvable mods are listed and warned about |
+| `cubecli tools export-modlist [--base64] [-o file] [--server-only] [--mod-source src]` | the same export for a foreign modpack: identifies the mod jars in the current directory (or `mods/`) against Modrinth/CurseForge |
 | `cubecli doctor` | environment checkup: docker, WSL, JDKs, daemon, current project — each with a fix-it hint |
 | `cubecli setup java list\|install <feature>` | JDK management (owned `~/.cubecli/jdks` → sdkman → system) |
 | `cubecli setup curseforge [key]` | store the CurseForge API key |

@@ -23,7 +23,7 @@ use cubecli_core::traits::runtime::{
 };
 
 use crate::error::{
-    Result as RtResult, RuntimeError, DOCKER_CLI_HINT, DOCKER_DAEMON_HINT, DOCKER_PLUGIN_HINT,
+    DOCKER_CLI_HINT, DOCKER_DAEMON_HINT, DOCKER_PLUGIN_HINT, Result as RtResult, RuntimeError,
 };
 use crate::stop::{clear_manual_stop, write_manual_stop};
 
@@ -98,7 +98,11 @@ fn render_body(meta: &cubecli_core::ProjectMeta, root: &Path) -> Result<String> 
             // Windows host persists run.bat / windows_args.txt in its launch
             // spec — the installers emit both variants, so swap to the unix
             // pair for the container.
-            format!("sh {} {}", shell_quote(&container_path(script)), args.join(" "))
+            format!(
+                "sh {} {}",
+                shell_quote(&container_path(script)),
+                args.join(" ")
+            )
         }
     };
     let command = format!("java {command}").replace('"', "'");
@@ -202,8 +206,7 @@ pub enum Freshness {
 pub fn ensure_fresh(project: &ProjectHandle) -> Result<Freshness> {
     let path = project.root().join(COMPOSE_FILE);
     let rendered = render(project.meta(), project.root())?;
-    let fresh_sig = on_disk_sig(&rendered)
-        .expect("render() always stamps a signature");
+    let fresh_sig = on_disk_sig(&rendered).expect("render() always stamps a signature");
 
     let outcome = match std::fs::read_to_string(&path) {
         Err(_) => {
@@ -520,7 +523,11 @@ impl RuntimeBackend for ComposeBackend {
         // stop + up (not `docker compose restart`): up recreates containers
         // whose rendered config changed — the native stop+start semantic.
         if self.status(project).await?.is_running() {
-            Self::run(project, &["stop", &Self::stop_timeout(StopGrace::default())]).await?;
+            Self::run(
+                project,
+                &["stop", &Self::stop_timeout(StopGrace::default())],
+            )
+            .await?;
         }
         Self::run(project, &["up", "-d"]).await?;
         clear_manual_stop(project.layout());

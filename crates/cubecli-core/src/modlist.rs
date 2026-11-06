@@ -111,9 +111,26 @@ pub fn parse(text: &str) -> Result<ModlistDocument> {
         let request = parse_request(line).map_err(|_| {
             CoreError::invalid_config(
                 "modlist",
-                format!("line {}: not a modlist entry (expected `mod:<slug>[@<version>]`)", index + 1),
+                format!(
+                    "line {}: not a modlist entry (expected `mod:<slug>[@<version>]`)",
+                    index + 1
+                ),
             )
         })?;
+        if request.slug.is_empty() {
+            return Err(CoreError::invalid_config(
+                "modlist",
+                format!("line {}: empty slug", index + 1),
+            ));
+        }
+        if let Some(version) = &request.version {
+            if version.is_empty() {
+                return Err(CoreError::invalid_config(
+                    "modlist",
+                    format!("line {}: empty version pin", index + 1),
+                ));
+            }
+        }
         if request.kind != crate::model::AddonKind::Mod {
             return Err(CoreError::invalid_config(
                 "modlist",
@@ -122,6 +139,16 @@ pub fn parse(text: &str) -> Result<ModlistDocument> {
                     index + 1,
                     request.kind.slug()
                 ),
+            ));
+        }
+        if request
+            .version
+            .as_deref()
+            .is_some_and(|v| v.trim().is_empty())
+        {
+            return Err(CoreError::invalid_config(
+                "modlist",
+                format!("line {}: empty version after `@`", index + 1),
             ));
         }
         doc.entries.push(ModlistEntry {
@@ -321,6 +348,6 @@ mod:sodium@0.6.5
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("lonely.jar"), b"x").unwrap();
         assert_eq!(scan_jars(tmp.path()).len(), 1);
-        assert!(scan_jars(tmp.path().join("empty")).is_empty());
+        assert!(scan_jars(&tmp.path().join("empty")).is_empty());
     }
 }

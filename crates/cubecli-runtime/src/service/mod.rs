@@ -14,9 +14,9 @@ pub mod windows;
 
 use std::path::PathBuf;
 
+use crate::error::Result;
 #[cfg(not(target_os = "windows"))]
 use crate::error::RuntimeError;
-use crate::error::Result;
 
 pub const LABEL: &str = "dev.cubecli.daemon";
 pub const SYSTEMD_UNIT: &str = "cubecli-daemon.service";

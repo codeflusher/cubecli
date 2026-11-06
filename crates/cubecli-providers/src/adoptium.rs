@@ -249,8 +249,7 @@ impl AdoptiumClient {
 /// contract as [`extract_tar_gz`]. `enclosed_name()` rejects path escapes.
 fn extract_zip(archive: &Path, dir: &Path) -> PResult<()> {
     let file = std::fs::File::open(archive).map_err(|e| ProviderError::io(archive, e))?;
-    let mut zip =
-        zip::ZipArchive::new(file).map_err(|e| ProviderError::Other(e.to_string()))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| ProviderError::Other(e.to_string()))?;
     let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     for index in 0..zip.len() {
         let mut entry = zip

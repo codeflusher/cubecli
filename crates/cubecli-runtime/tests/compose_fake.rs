@@ -77,7 +77,13 @@ fn fake_docker(ps_json: &str, require_marker: Option<&std::path::Path>) -> FakeD
     let ps_file = tmp.path().join("ps.json");
     std::fs::write(&ps_file, ps_json).unwrap();
 
-    let keys = ["CUBECLI_DOCKER_BIN", "FAKE_DOCKER_JOURNAL", "FAKE_DOCKER_PS", "FAKE_DOCKER_MARKER", "FAKE_DOCKER_REQUIRE_MARKER"];
+    let keys = [
+        "CUBECLI_DOCKER_BIN",
+        "FAKE_DOCKER_JOURNAL",
+        "FAKE_DOCKER_PS",
+        "FAKE_DOCKER_MARKER",
+        "FAKE_DOCKER_REQUIRE_MARKER",
+    ];
     let originals: Vec<(&'static str, Option<OsString>)> =
         keys.iter().map(|k| (*k, std::env::var_os(k))).collect();
     unsafe {
@@ -132,8 +138,7 @@ fn compose_project() -> (tempfile::TempDir, ProjectLayout, ProjectHandle) {
     (tmp, layout, handle)
 }
 
-const RUNNING_PS: &str =
-    r#"[{"Name":"cubecli-spec-server-1","State":"running","ExitCode":0,"StartedAt":"2026-01-02T03:04:05.000000000Z"}]"#;
+const RUNNING_PS: &str = r#"[{"Name":"cubecli-spec-server-1","State":"running","ExitCode":0,"StartedAt":"2026-01-02T03:04:05.000000000Z"}]"#;
 
 #[tokio::test]
 async fn start_clears_manual_stop_marker_and_runs_up() {
@@ -142,7 +147,10 @@ async fn start_clears_manual_stop_marker_and_runs_up() {
     std::fs::write(layout.manually_stopped_marker(), "old stop").unwrap();
 
     let status = ComposeBackend.start(&handle).await.unwrap();
-    assert!(matches!(status, RuntimeStatus::Running { .. }), "{status:?}");
+    assert!(
+        matches!(status, RuntimeStatus::Running { .. }),
+        "{status:?}"
+    );
     assert!(
         !layout.manually_stopped_marker().exists(),
         "start is intentional — it must clear the marker"
@@ -215,7 +223,10 @@ async fn restart_of_stopped_container_goes_straight_to_up() {
 
     ComposeBackend.restart(&handle).await.unwrap();
     let journal = fake.journal();
-    assert!(!journal.contains(" stop "), "nothing running to stop: {journal}");
+    assert!(
+        !journal.contains(" stop "),
+        "nothing running to stop: {journal}"
+    );
     assert!(journal.contains(" up -d"));
 }
 

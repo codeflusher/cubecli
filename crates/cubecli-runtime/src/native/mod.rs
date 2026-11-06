@@ -112,10 +112,8 @@ impl RuntimeBackend for NativeBackend {
         // only — ArgFile JVM flags live in user_jvm_args.txt (rewritten by
         // managed_files::apply_max_heap), and Script launches are opaque.
         let argv = if matches!(launch, cubecli_core::model::LaunchSpec::Jar { .. }) {
-            let merged = cubecli_core::jvm::merge_jvm_args(
-                &argv[1..],
-                meta.runtime.max_heap.as_deref(),
-            );
+            let merged =
+                cubecli_core::jvm::merge_jvm_args(&argv[1..], meta.runtime.max_heap.as_deref());
             std::iter::once(argv[0].clone())
                 .chain(merged)
                 .collect::<Vec<String>>()

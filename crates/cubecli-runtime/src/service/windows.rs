@@ -37,16 +37,7 @@ pub fn render(spec: &ServiceSpec) -> String {
 pub fn install(spec: &ServiceSpec) -> Result<()> {
     let tr = render(spec);
     schtasks(&[
-        "/Create",
-        "/TN",
-        TASK,
-        "/TR",
-        &tr,
-        "/SC",
-        "ONLOGON",
-        "/RL",
-        "LIMITED",
-        "/F",
+        "/Create", "/TN", TASK, "/TR", &tr, "/SC", "ONLOGON", "/RL", "LIMITED", "/F",
     ])?;
     Ok(())
 }

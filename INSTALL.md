@@ -9,9 +9,9 @@
   Minecraft version into `~/.cubecli/jdks/` (Adoptium Temurin). Existing
   [sdkman](https://sdkman.io) JDKs are picked up too; a system `java` on
   PATH works as an unrecommended fallback.
-- **Platforms**: macOS (primary) and Linux. On Windows, run cubecli inside
-  **WSL2** (see the Docker & WSL2 section below); native Windows support is
-  planned.
+- **Platforms**: macOS (primary), Linux, and **Windows** (new — the native
+  backend, daemon, and Adoptium JDK provisioning all work on Windows; WSL2
+  remains the battle-tested path).
 - **Docker** (optional) — only if you switch a project to the compose
   backend with `cubecli project config backend=compose`.
 
@@ -113,6 +113,25 @@ cubecli daemon status
 On headless Linux boxes also run `loginctl enable-linger $USER` so the
 daemon survives logout. Remove it any time with `cubecli daemon uninstall`
 (logs and state are kept).
+
+## Windows (native)
+
+Windows support is new; prefer WSL2 for anything critical. What differs:
+
+- **JDKs**: Adoptium ships Windows assets as `.zip` — cubecli extracts them
+  into `~/.cubecli/jdks/` the same as the tarballs elsewhere. A `JAVA_HOME`
+  pointing at a JDK is picked up automatically.
+- **Forge / NeoForge**: the installers emit `run.bat` alongside `run.sh`;
+  cubecli launches through `cmd /C run.bat` and reads `windows_args.txt`.
+  The compose backend maps these back to the unix pair for the Linux
+  container.
+- **Daemon**: installed as a logon-triggered scheduled task
+  (`schtasks /TN dev.cubecli.daemon`), user-level, no admin required.
+- **Stop ladder**: RCON `stop` first, then `taskkill /T`, then
+  `taskkill /T /F` — no signals on Windows.
+- **Known gap**: `rcon.secret` is created with default ACLs (other local
+  users can read it). `cubecli doctor` notes it once it lands a Windows
+  check. Keep the machine single-user if this matters to you.
 
 ## Where things live
 

@@ -152,8 +152,7 @@ fn java_check(ctx: &AppContext) -> Check {
         return Check {
             name: "java",
             status: CheckStatus::Ok,
-            detail: "no JDKs found — the right one is auto-installed on first start"
-                .to_string(),
+            detail: "no JDKs found — the right one is auto-installed on first start".to_string(),
             hint: Some("pre-download one: `cubecli setup java install 21`".into()),
         };
     }
@@ -236,10 +235,7 @@ async fn project_checks(ctx: &AppContext, handle: &ProjectHandle) -> Vec<Check> 
         checks.push(Check {
             name: "project/ports",
             status: CheckStatus::Fail,
-            detail: format!(
-                "game port {} equals rcon port",
-                meta.runtime.port
-            ),
+            detail: format!("game port {} equals rcon port", meta.runtime.port),
             hint: Some("run `cubecli project config port=<other port>`".into()),
         });
     } else {
@@ -262,7 +258,8 @@ async fn project_checks(ctx: &AppContext, handle: &ProjectHandle) -> Vec<Check> 
             checks.push(Check {
                 name: "project/path",
                 status: CheckStatus::Warn,
-                detail: "project lives on a Windows drive (/mnt/…) — slow I/O and slow world saves".into(),
+                detail: "project lives on a Windows drive (/mnt/…) — slow I/O and slow world saves"
+                    .into(),
                 hint: Some("keep server projects in the WSL filesystem (e.g. ~/servers)".into()),
             });
         }
@@ -276,7 +273,11 @@ async fn project_checks(ctx: &AppContext, handle: &ProjectHandle) -> Vec<Check> 
             let rcon = rcon_probe(handle).await;
             checks.push(Check {
                 name: "project/state",
-                status: if rcon { CheckStatus::Ok } else { CheckStatus::Fail },
+                status: if rcon {
+                    CheckStatus::Ok
+                } else {
+                    CheckStatus::Fail
+                },
                 detail: if rcon {
                     "server running, RCON reachable".into()
                 } else {
@@ -285,10 +286,12 @@ async fn project_checks(ctx: &AppContext, handle: &ProjectHandle) -> Vec<Check> 
                         meta.runtime.rcon_port
                     )
                 },
-                hint: (!rcon).then(|| {
-                    match meta.runtime.backend {
-                        Backend::Compose => "compose projects need `project compose` re-run after a port change".into(),
-                        Backend::Native => "check the server actually finished booting (project logs)".into(),
+                hint: (!rcon).then(|| match meta.runtime.backend {
+                    Backend::Compose => {
+                        "compose projects need `project compose` re-run after a port change".into()
+                    }
+                    Backend::Native => {
+                        "check the server actually finished booting (project logs)".into()
                     }
                 }),
             });
@@ -334,10 +337,8 @@ async fn rcon_probe(handle: &ProjectHandle) -> bool {
     let Ok(secret) = std::fs::read_to_string(layout.rcon_secret_file()) else {
         return false;
     };
-    let port = cubecli_runtime::native::properties_port(
-        &layout.root().join("server.properties"),
-    )
-    .unwrap_or(25575);
+    let port = cubecli_runtime::native::properties_port(&layout.root().join("server.properties"))
+        .unwrap_or(25575);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     matches!(
         tokio::time::timeout(

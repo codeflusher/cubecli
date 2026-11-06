@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use cubecli_core::model::{AddonKind, AddonSourceId, BuildChannel, ModLoader};
-use cubecli_core::traits::addon_source::{AddonQuery, AddonSource};
+use cubecli_core::traits::addon_source::{AddonQuery, AddonSource, ServerSide};
 use cubecli_core::traits::progress::ProgressReporter;
 use cubecli_core::traits::server_core::ServerCoreProvider;
 
@@ -885,6 +885,251 @@ async fn curseforge_slug_miss_is_not_found_and_datapack_unsupported() {
         .await
         .unwrap_err();
     assert!(matches!(err, cubecli_core::CoreError::Unsupported { .. }));
+}
+
+// ------------------------------------------------------------------------------------------------
+// file identification (tools export-modlist)
+
+fn write_jar(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+fn sha1_hex(content: &[u8]) -> String {
+    use sha1::Digest as _;
+    let mut h = sha1::Sha1::new();
+    h.update(content);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[tokio::test]
+async fn modrinth_identifies_file_by_sha1_and_unknown_hash_is_none() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let known = write_jar(tmp.path(), "known.jar", b"sodium jar contents");
+    let unknown = write_jar(tmp.path(), "unknown.jar", b"mystery jar contents");
+
+    let known_hash = sha1_hex(b"sodium jar contents");
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/version_file/{known_hash}")))
+        .and(query_param("algorithm", "sha1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "project_id": "AANobbMI",
+            "project_type": "mod",
+            "version_number": "0.6.5",
+            "game_versions": ["1.21.1"],
+        })))
+        .mount(&server)
+        .await;
+    // any other hash is a miss
+    Mock::given(method("GET"))
+        .and(path("/v2/version_file/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/project/AANobbMI"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "slug": "sodium", "id": "AANobbMI", "title": "Sodium", "description": "fast",
+            "project_type": "mod", "server_side": "required"
+        })))
+        .mount(&server)
+        .await;
+
+    let source = cubecli_providers::modrinth::ModrinthSource::with_base(
+        client(),
+        format!("{}/v2", server.uri()),
+    );
+    let identified = source.identify(&known).await.unwrap().expect("known jar");
+    assert_eq!(identified.project.slug, "sodium");
+    assert_eq!(identified.project.provider_id, "AANobbMI");
+    assert_eq!(identified.version, "0.6.5");
+    assert_eq!(identified.kind, Some(AddonKind::Mod));
+    assert_eq!(identified.server_side, Some(ServerSide::Required));
+
+    // a hash Modrinth doesn't know is None, not an error
+    let miss = source.identify(&unknown).await.unwrap();
+    assert!(miss.is_none());
+}
+
+#[tokio::test]
+async fn modrinth_server_side_parses_all_declared_values() {
+    let server = MockServer::start().await;
+    for (id, side) in [
+        ("req", "required"),
+        ("opt", "optional"),
+        ("unsup", "unsupported"),
+        ("odd", "client-and-server"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/project/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "slug": id, "id": id, "title": id, "description": "",
+                "project_type": "mod", "server_side": side
+            })))
+            .mount(&server)
+            .await;
+    }
+
+    let source = cubecli_providers::modrinth::ModrinthSource::with_base(
+        client(),
+        format!("{}/v2", server.uri()),
+    );
+    let project = |slug: &str| cubecli_core::traits::addon_source::AddonProject {
+        slug: slug.into(),
+        provider_id: slug.into(),
+        title: String::new(),
+        description: String::new(),
+    };
+    use cubecli_core::traits::addon_source::AddonSource as _;
+    assert_eq!(
+        source.server_side(&project("req")).await.unwrap(),
+        Some(ServerSide::Required)
+    );
+    assert_eq!(
+        source.server_side(&project("opt")).await.unwrap(),
+        Some(ServerSide::Optional)
+    );
+    assert_eq!(
+        source.server_side(&project("unsup")).await.unwrap(),
+        Some(ServerSide::Unsupported)
+    );
+    assert_eq!(
+        source.server_side(&project("odd")).await.unwrap(),
+        Some(ServerSide::Unknown),
+        "undeclared values map to Unknown"
+    );
+}
+
+#[tokio::test]
+async fn curseforge_identifies_file_via_fingerprints_and_file_detail() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let known = write_jar(tmp.path(), "mod.jar", b"cf jar contents");
+    let unknown = write_jar(tmp.path(), "other.jar", b"untracked contents");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/fingerprints"))
+        .and(body_partial_json(json!({
+            "fingerprints": [cubecli_providers::murmur2::digest(b"cf jar contents")]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "isCacheBuilt": true,
+                "exactMatches": [
+                    {"id": 238222, "file": {"id": 12345, "modId": 238222, "fileName": "jei.jar"}}
+                ],
+                "unmatchedFingerprints": [],
+            }
+        })))
+        .mount(&server)
+        .await;
+    // every other fingerprint lands in unmatchedFingerprints
+    Mock::given(method("POST"))
+        .and(path("/v1/fingerprints"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"isCacheBuilt": true, "exactMatches": [], "unmatchedFingerprints": [42]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/mods/238222"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"id": 238222, "slug": "jei", "name": "Just Enough Items"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/mods/238222/files/12345"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"id": 12345, "displayName": "JEI 1.21.8", "isClientSideOnly": false}
+        })))
+        .mount(&server)
+        .await;
+
+    let source = cubecli_providers::curseforge::CurseForgeSource::with_base(
+        client(),
+        format!("{}/v1", server.uri()),
+        cf_key(),
+        tempfile::tempdir().unwrap().path().to_path_buf(),
+    );
+    let identified = source.identify(&known).await.unwrap().expect("tracked jar");
+    assert_eq!(identified.project.slug, "jei");
+    assert_eq!(identified.project.provider_id, "238222");
+    assert_eq!(identified.version, "JEI 1.21.8");
+    assert_eq!(identified.kind, None, "CF cannot tell the addon kind");
+    assert_eq!(identified.server_side, None, "not client-side-only");
+
+    // An unmatched fingerprint is None, not an error.
+    let miss = source.identify(&unknown).await.unwrap();
+    assert!(miss.is_none(), "untracked jar must not error");
+}
+
+#[tokio::test]
+async fn curseforge_identify_flags_client_side_only_files() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let jar = write_jar(tmp.path(), "clientmod.jar", b"client jar contents");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/fingerprints"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"exactMatches": [{"id": 7, "file": {"id": 8}}], "unmatchedFingerprints": []}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/mods/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"id": 7, "slug": "clientmod", "name": "ClientMod"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/mods/7/files/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"id": 8, "displayName": "ClientMod", "isClientSideOnly": true}
+        })))
+        .mount(&server)
+        .await;
+
+    let source = cubecli_providers::curseforge::CurseForgeSource::with_base(
+        client(),
+        format!("{}/v1", server.uri()),
+        cf_key(),
+        tempfile::tempdir().unwrap().path().to_path_buf(),
+    );
+    let identified = source.identify(&jar).await.unwrap().unwrap();
+    assert_eq!(
+        identified.server_side,
+        Some(ServerSide::Unsupported),
+        "isClientSideOnly maps to Unsupported"
+    );
+}
+
+#[tokio::test]
+async fn curseforge_identify_needs_the_api_key() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let jar = write_jar(tmp.path(), "x.jar", b"contents");
+
+    let source = cubecli_providers::curseforge::CurseForgeSource::with_base(
+        client(),
+        format!("{}/v1", server.uri()),
+        cf_no_key(),
+        tempfile::tempdir().unwrap().path().to_path_buf(),
+    );
+    let err = source.identify(&jar).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            cubecli_providers::ProviderError::Auth {
+                service: "curseforge"
+            }
+        ),
+        "{err}"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
