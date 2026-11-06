@@ -2,6 +2,8 @@
 
 Create, configure, run, and maintain Minecraft servers — one Rust CLI.
 
+AI Policy: This Project is a MVP and/or proof of concept, build entierly by using AI agents
+
 See **[INSTALL.md](INSTALL.md)** for the full installation & first-run guide.
 
 ```bash
